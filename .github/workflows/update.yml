@@ -61,7 +61,7 @@ jobs:
           gh cache list --key fields- --sort created_at --order desc --limit 100 --json id --jq '.[2:][].id' \
             | xargs -r -n1 gh cache delete
 
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
 
       - uses: actions/upload-pages-artifact@v3
         with:
