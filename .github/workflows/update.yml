@@ -31,14 +31,14 @@ jobs:
       - run: pip install -r requirements.txt
 
       # 1:10m Natural Earth shapefiles (~40 MB, downloaded once, then cached)
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/.local/share/cartopy
           key: natural-earth-10m-v1
 
       # Previous hours' fields (small float16 arrays, ~25 MB) -> each run only downloads the newest cycle.
       - name: Restore field cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .cache/fields
           key: fields-${{ github.run_id }}
@@ -48,7 +48,7 @@ jobs:
         run: python -m rtma_viewer.build --out public --cache .cache/fields
 
       - name: Save field cache
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .cache/fields
           key: fields-${{ github.run_id }}
