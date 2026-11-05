@@ -172,10 +172,10 @@ def render_panel(ctx: MapContext, field: np.ndarray, style: Style, *, texts: tup
     # ------------------------------------------------------------------ colour bar (bottom left) + branding
     bar_h, bar_y = 0.28, FOOTER_H - 0.13 - 0.28
     cax = fig.add_axes([0.48 / FIG_W, bar_y / FIG_H, 7.35 / FIG_W, bar_h / FIG_H])
-    fmt = (lambda v, _: "0" if abs(v) < 1e-9 else f"{v:+g}") if signed else (lambda v, _: f"{v:g}")
+    fmt = lambda v, _: "0" if abs(v) < 1e-9 else f"{v:g}"          # legend: no "+" signs (as in the WPC bar)
     cb = fig.colorbar(mesh, cax=cax, orientation="horizontal", extend="neither", ticks=style.ticks,
-                      format=mticker.FuncFormatter(fmt), spacing="proportional")
-    cb.ax.tick_params(labelsize=12.5, length=3, width=0.8, pad=2, colors="black")
+                      format=mticker.FuncFormatter(fmt), spacing="uniform" if style.uniform else "proportional")
+    cb.ax.tick_params(labelsize=style.tick_fontsize, length=3, width=0.8, pad=2, colors="black")
     cb.outline.set_linewidth(0.9)
     cy = (bar_y + bar_h / 2) / FIG_H
     _bold_regular(fig, 1 - MARGIN / FIG_W, cy - 0.006, BRANDING[0], BRANDING[1], 10.5, right=True)

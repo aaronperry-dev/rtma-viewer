@@ -10,7 +10,7 @@ rtma_viewer/
   s3.py          anonymous S3 access, .idx parsing, one HTTP byte-range request per GRIB message
   grib.py        eccodes decode straight from memory, New England window of the CONUS grid
   fields.py      fetch -> decode -> window -> float16 cache (so each hour only the newest cycle is downloaded)
-  colors.py      fixed-level colour ramps (OKLab-interpolated, ColorBrewer diverging for changes)
+  colors.py      fixed-level colour ramps (OKLab-interpolated; WPC-style ramp for changes)
   stations.py    New England METAR stations (data/stations.csv) + label de-cluttering
   boundaries.py  Natural Earth 1:10m states/counties/coast/lakes, clipped + pre-projected once
   render.py      cartopy/matplotlib map panels -> palette-quantised, oxipng-recompressed PNGs
@@ -77,8 +77,9 @@ as KMWN reads the analysis at the grid's terrain height, not at 1917 m.)
 * Temperature: the classic -40..120 F operational ramp (magenta -> purple -> blue | green at 32 F ->
   yellow -> orange -> red -> pink), 1 F bins. Wind speed/gust and dew point: sequential ramps, monotone in
   lightness.
-* Changes: ColorBrewer diverging ramps (RdBu, BrBG, PuOr; colour-blind-safe), neutral centre bin,
-  symmetric limits per interval (e.g. temperature +/-10, 15, 20, 30, 40 F for 1/3/6/12/24 h).
+* Changes (all four variables, all intervals): the WPC-style change ramp - white for -1..+1, blues for cooling,
+  peach -> orange -> red -> maroon -> magenta for warming - with the original whole-number levels (1, 3, 5, 8, 12,
+  16, 20, 25, 30, 35, 40, 50) and an equal-width legend. The levels are the same for 1/3/6/12/24 h.
 * Edit `rtma_viewer/colors.py` to change anchors, ranges or bin widths.
 
 ## Run locally

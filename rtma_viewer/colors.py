@@ -9,8 +9,9 @@ Design rules
   PNGs that still quantise losslessly to an indexed palette.
 * Sequential ramps (wind, gust, dew point) are monotone in lightness.  Temperature
   uses the classic multi-hue operational ramp (-40..120 °F) with a deliberate blue/green break at 32 °F.
-* Change maps use ColorBrewer diverging ramps (colour-blind-safe) with a neutral
-  middle bin straddling zero.
+* Change maps use the WPC-style ramp: uneven whole-number levels (±1, 3, 5, 8, 12, 16, 20, 25, 30, 35, 40, 50) with a
+  white band for -1..+1, blues for cooling, oranges/reds/magenta for warming.  Identical for every interval
+  (1/3/6/12/24 h) and every variable, so a colour always means the same amount of change.
 """
 from __future__ import annotations
 
@@ -80,22 +81,6 @@ WIND_MPH = Ramp([  # calm -> yellow -> orange -> red -> purple (monotone lightne
     (40, "#b3203f"), (50, "#7c1d6f"), (60, "#471a73"), (70, "#1f1448"),
 ])
 
-# ColorBrewer 11-class diverging (low -> high), https://colorbrewer2.org
-_BREWER = {
-    "RdBu_r": ["#053061", "#2166ac", "#4393c3", "#92c5de", "#d1e5f0", "#f7f7f7",
-               "#fddbc7", "#f4a582", "#d6604d", "#b2182b", "#67001f"],   # blue = cooler, red = warmer
-    "BrBG":   ["#543005", "#8c510a", "#bf812d", "#dfc27d", "#f6e8c3", "#f5f5f5",
-               "#c7eae5", "#80cdc1", "#35978f", "#01665e", "#003c30"],   # brown = drier, teal = moister
-    "PuOr":   ["#7f3b08", "#b35806", "#e08214", "#fdb863", "#fee0b6", "#f7f7f7",
-               "#d8daeb", "#b2abd2", "#8073ac", "#542788", "#2d004b"],   # orange = weaker, purple = stronger
-}
-
-
-def _brewer_ramp(name: str) -> Ramp:
-    cols = _BREWER[name]
-    return Ramp([(i / (len(cols) - 1), c) for i, c in enumerate(cols)])
-
-
 # --------------------------------------------------------------------------- styles
 @dataclass
 class Style:
@@ -104,6 +89,8 @@ class Style:
     extend: str
     ticks: np.ndarray
     signed: bool = False
+    uniform: bool = False          # legend with equal-width blocks (uneven levels)
+    tick_fontsize: float = 12.5
 
     def cmap_norm(self):
         return from_levels_and_colors(self.levels, [tuple(c) for c in self.colors], extend=self.extend)
@@ -124,14 +111,22 @@ def sequential_style(ramp: Ramp, vmin: float, vmax: float, step: float, tick: fl
     return Style(levels, cols, extend, np.arange(vmin, vmax + tick / 2, tick))
 
 
-def diverging_style(brewer: str, step: float, k: int = 20) -> Style:
-    """2k+1 equal bins; the centre bin straddles zero and takes the neutral colour."""
-    ramp = _brewer_ramp(brewer)
-    levels = (np.arange(-k, k + 2) - 0.5) * step
-    centers = np.arange(2 * k + 1) + 0.5
-    cols = ramp(centers / (2 * k + 1))
-    cols = np.vstack([ramp(0.0), cols, ramp(1.0)])
-    return Style(levels, cols, "both", np.arange(-k, k + 1, k // 2) * step, signed=True)
+# WPC-style change ramp, same for every interval (display units, e.g. °F or mph): 24 boundaries -> 23 bins + under/over colours.
+_WPC_LEVELS = np.array([-50, -40, -35, -30, -25, -20, -16, -12, -8, -5, -3, -1,
+                        1, 3, 5, 8, 12, 16, 20, 25, 30, 35, 40, 50], float)
+_WPC_COLORS = [
+    "#fa96c8",                                                       # below -50
+    "#c670a8", "#934b89", "#60256a", "#1e1e78", "#162f99", "#0f41bb",  # -50 .. -16   (pink-violet -> navy -> blue)
+    "#0752dd", "#0064ff", "#3f8aff", "#7fb1ff", "#bfd8ff",            # -16 .. -1    (blue -> pale blue)
+    "#ffffff",                                                        # -1 .. +1     (no meaningful change)
+    "#fdbb84", "#fc8d59", "#ef6548", "#d7301f", "#b30000", "#67001f",  # +1 .. +20    (peach -> orange -> red -> maroon)
+    "#980043", "#ce1256", "#e7298a", "#df65b0", "#c994c7",            # +20 .. +50   (crimson -> magenta -> orchid)
+    "#d4b9da",                                                        # above +50
+]
+
+def change_style() -> Style:
+    cols = np.array([to_rgb(c) for c in _WPC_COLORS])
+    return Style(_WPC_LEVELS.copy(), cols, "both", _WPC_LEVELS.copy(), signed=True, uniform=True, tick_fontsize=10.5)
 
 
 _ABS = {
@@ -141,17 +136,7 @@ _ABS = {
     "gust": lambda: sequential_style(WIND_MPH, 0, 70, 0.5, 10, "max"),
 }
 
-# bin width (in display units) of the change maps; +/- 20 bins either side of zero
-_CHANGE_STEP = {
-    "temp":     {1: 0.5, 3: 0.75, 6: 1.0, 12: 1.5, 24: 2.0},     # -> +/-10, 15, 20, 30, 40 degF
-    "dewpoint": {1: 0.5, 3: 0.75, 6: 1.0, 12: 1.5, 24: 2.0},
-    "wind":     {1: 0.5, 3: 0.75, 6: 1.0, 12: 1.25, 24: 1.5},    # -> +/-10, 15, 20, 25, 30 mph
-    "gust":     {1: 1.0, 3: 1.25, 6: 1.5, 12: 2.0, 24: 2.0},     # -> +/-20, 25, 30, 40, 40 mph
-}
-_CHANGE_RAMP = {"temp": "RdBu_r", "dewpoint": "BrBG", "wind": "PuOr", "gust": "PuOr"}
-
-
 def style_for(var_key: str, interval: int) -> Style:
     if interval == 0:
         return _ABS[var_key]()
-    return diverging_style(_CHANGE_RAMP[var_key], _CHANGE_STEP[var_key][interval])
+    return change_style()

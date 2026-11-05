@@ -22,7 +22,7 @@ def test_temperature_has_freezing_break():
     assert above[1] > above[2] and below[2] >= below[1]     # greener above 32, bluer below
 
 
-def test_diverging_is_symmetric_with_neutral_centre():
+def test_change_ramp_is_symmetric_with_white_centre():
     for var in VARIABLES:
         for h in INTERVALS[1:]:
             s = c.style_for(var, h)
@@ -38,3 +38,19 @@ def test_diverging_is_symmetric_with_neutral_centre():
 def test_levels_are_fixed():
     # identical call -> identical levels (colour meaning never changes between runs)
     assert np.array_equal(c.style_for("wind", 0).levels, c.style_for("gust", 0).levels)
+
+
+def test_change_ramp_matches_wpc_levels():
+    s = c.style_for("temp", 24)
+    assert list(s.levels) == [-50, -40, -35, -30, -25, -20, -16, -12, -8, -5, -3, -1,
+                              1, 3, 5, 8, 12, 16, 20, 25, 30, 35, 40, 50]
+    assert len(s.colors) == len(s.levels) + 1          # 23 bins + under + over
+    assert np.allclose(s.colors[12], (1, 1, 1))        # -1..+1 is white
+    # warming is warm-coloured, cooling is blue
+    assert s.colors[13][0] > s.colors[13][2] and s.colors[10][2] > s.colors[10][0]
+    # whole numbers, and identical for every interval and variable (no per-interval scaling)
+    assert all(float(v).is_integer() for v in s.levels)
+    for var in ("temp", "dewpoint", "wind", "gust"):
+        for h in (1, 3, 6, 12, 24):
+            t = c.style_for(var, h)
+            assert np.array_equal(t.levels, s.levels) and np.allclose(t.colors, s.colors)
