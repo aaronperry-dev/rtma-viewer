@@ -1,0 +1,78 @@
+name: Update RTMA/URMA viewer
+
+on:
+  schedule:
+    - cron: "47 * * * *"      # hourly; :47 so RTMA (~:35-45 after the hour) is usually published
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+  actions: write               # only used to prune old field caches
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - run: pip install -r requirements.txt
+
+      # 1:10m Natural Earth shapefiles (~40 MB, downloaded once, then cached)
+      - uses: actions/cache@v4
+        with:
+          path: ~/.local/share/cartopy
+          key: natural-earth-10m-v1
+
+      # Previous hours' fields (small float16 arrays, ~25 MB) -> each run only downloads the newest cycle.
+      - name: Restore field cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/fields
+          key: fields-${{ github.run_id }}
+          restore-keys: fields-
+
+      - name: Build site
+        run: python -m rtma_viewer.build --out public --cache .cache/fields
+
+      - name: Save field cache
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/fields
+          key: fields-${{ github.run_id }}
+
+      - name: Prune old field caches (keep newest 2)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh cache list --key fields- --sort created_at --order desc --limit 100 --json id --jq '.[2:][].id' \
+            | xargs -r -n1 gh cache delete
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

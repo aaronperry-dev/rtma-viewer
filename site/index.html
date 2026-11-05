@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>New England RTMA / URMA viewer</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%277%27 fill=%27%231f6feb%27/%3E%3Cpath d=%27M7 21l5-6 4 3 6-9 3 5%27 fill=%27none%27 stroke=%27white%27 stroke-width=%272.6%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27/%3E%3C/svg%3E">
+<meta name="description" content="Hourly RTMA and URMA surface analyses for New England: temperature, dew point, wind speed and gusts, with 1/3/6/12/24-hour changes.">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f4f6f8; --surface: #ffffff; --ink: #1c2128; --muted: #59636e; --line: #d8dee4;
+    --accent: #1f6feb; --accent-ink: #ffffff; --soft: #eaeef2; --warn-bg: #fff4d6; --warn-ink: #6a4b00;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --surface: #161b22; --ink: #e6edf3; --muted: #9198a1; --line: #30363d;
+      --accent: #58a6ff; --accent-ink: #0d1117; --soft: #21262d; --warn-bg: #3a2f10; --warn-ink: #f2cc60;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 20px 20px 40px; }
+
+  header { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 8px 24px; margin-bottom: 16px; }
+  h1 { font-size: 22px; line-height: 1.2; margin: 0; letter-spacing: -0.01em; }
+  .sub { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+  .status { text-align: right; color: var(--muted); font-size: 13px; }
+  .status strong { color: var(--ink); font-weight: 600; }
+  .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--warn-bg); color: var(--warn-ink);
+          font-size: 12px; font-weight: 600; margin-left: 6px; }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 12px 22px; padding: 12px 14px; background: var(--surface);
+              border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 16px; }
+  .group { display: flex; flex-direction: column; gap: 5px; }
+  .group > span { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  .seg { display: inline-flex; flex-wrap: wrap; max-width: 100%; background: var(--soft); border-radius: 8px; padding: 2px; gap: 2px; }
+  .seg button { appearance: none; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 14px;
+                padding: 5px 10px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
+  .seg button:hover:not([aria-pressed="true"]):not(:disabled) { background: color-mix(in srgb, var(--ink) 8%, transparent); }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  .seg button:disabled { opacity: .4; cursor: not-allowed; }
+  button:focus-visible, tr[tabindex]:focus-visible, .thumb:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 20px; align-items: start; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; }
+  .mapcard { display: flex; justify-content: center; background: #fff; border-radius: var(--radius); border: 1px solid var(--line); overflow: hidden; }
+  .mapcard img { display: block; width: auto; height: auto; max-width: 100%; max-height: calc(100vh - 150px); transition: opacity .12s; }
+  .mapcard img.loading { opacity: .35; }
+  .empty { padding: 60px 20px; text-align: center; color: var(--muted); }
+
+  h2 { font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 18px; }
+  .tile { background: var(--soft); border-radius: 8px; padding: 8px 10px; }
+  .tile .k { font-size: 12px; color: var(--muted); }
+  .tile .v { font-size: 21px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+  .tile .u { font-size: 13px; color: var(--muted); font-weight: 500; margin-left: 2px; }
+
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 14px; }
+  th, td { padding: 6px 8px; text-align: right; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: var(--soft); }
+  tbody tr[aria-selected="true"] { background: color-mix(in srgb, var(--accent) 14%, transparent); font-weight: 600; }
+  .note { color: var(--muted); font-size: 13px; margin: 14px 0 0; }
+
+  #compare { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+  .thumb { background: #fff; border: 2px solid var(--line); border-radius: var(--radius); padding: 4px; cursor: pointer; text-align: center; overflow: hidden; }
+  .thumb[aria-current="true"] { border-color: var(--accent); }
+  .thumb img { width: 100%; height: auto; display: block; }
+  .thumb .cap { font-size: 13px; color: #59636e; padding: 2px 0 4px; font-weight: 600; }
+  .thumb.na { display: flex; align-items: center; justify-content: center; min-height: 160px; color: #59636e; }
+
+  footer { margin-top: 28px; color: var(--muted); font-size: 12.5px; }
+  footer a { color: inherit; }
+  [hidden] { display: none !important; }
+
+  @media (max-width: 900px) {
+    main { grid-template-columns: minmax(0, 1fr); }
+    #compare { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .status { text-align: left; }
+    .mapcard img { max-height: none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>New England surface analysis</h1>
+      <p class="sub">NOAA RTMA &amp; URMA · 2.5&nbsp;km · current fields and 1 / 3 / 6 / 12 / 24-hour changes</p>
+    </div>
+    <div class="status" id="status" aria-live="polite">Loading…</div>
+  </header>
+
+  <section class="controls" aria-label="Controls">
+    <div class="group"><span>Product</span><div class="seg" id="seg-product" role="group" aria-label="Product"></div></div>
+    <div class="group"><span>Variable</span><div class="seg" id="seg-var" role="group" aria-label="Variable"></div></div>
+    <div class="group"><span>Current field · or change over the last</span><div class="seg" id="seg-int" role="group" aria-label="Time step"></div></div>
+    <div class="group"><span>View</span><div class="seg" id="seg-view" role="group" aria-label="View"></div></div>
+  </section>
+
+  <main id="single">
+    <div class="mapcard" id="mapcard"><img id="map" alt=""><div class="empty" id="empty" hidden></div></div>
+    <aside class="card" aria-label="Summary">
+      <h2 id="sum-title">New England land area</h2>
+      <div class="tiles" id="tiles"></div>
+      <h2>All time steps</h2>
+      <table>
+        <thead><tr><th>Field</th><th id="th-lo">Low</th><th>Mean</th><th id="th-hi">High</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <p class="note" id="blurb"></p>
+    </aside>
+  </main>
+
+  <section id="compare" hidden aria-label="All time steps for the selected variable"></section>
+
+  <footer>
+    Data: NOAA/NWS RTMA &amp; URMA from the <a href="https://registry.opendata.aws/noaa-rtma/">NOAA Open Data (AWS S3)</a> buckets.
+    Statistics cover grid cells inside CT, MA, ME, NH, RI and VT. Maps are redrawn hourly; change = current minus the earlier analysis.
+    Use ← / → to step through time. <span id="demo-note"></span>
+  </footer>
+</div>
+
+<script>
+"use strict";
+const $ = (s, el = document) => el.querySelector(s);
+const TZ = "America/New_York";
+const state = { product: "rtma", variable: "temp", interval: 0, view: "map" };
+let data;
+
+const fmtDate = (iso, tz) => new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short", month: "short", day: "numeric",
+                                hour: "numeric", minute: "2-digit", timeZoneName: "short" }).format(new Date(iso));
+const intLabel = h => h === 0 ? "Current" : `${h} h`;
+const num = (v, signed) => v == null ? "—" : (signed && v > 0 ? "+" : "") + v.toFixed(1).replace("-", "−");
+const varMeta = k => data.variables.find(v => v.key === k);
+const prod = () => data.products[state.product];
+const panel = (p = state.product, v = state.variable, h = state.interval) => data.products[p]?.panels?.[v]?.[String(h)];
+const src = p => `${p.file}?v=${data.version}`;
+
+function seg(el, items, current, onPick) {
+  el.replaceChildren(...items.map(it => {
+    const b = document.createElement("button");
+    b.type = "button"; b.textContent = it.label; b.disabled = !!it.disabled;
+    b.setAttribute("aria-pressed", String(it.value === current));
+    b.addEventListener("click", () => onPick(it.value));
+    return b;
+  }));
+}
+
+function readHash() {
+  const [p, v, h, view] = location.hash.slice(1).split("/");
+  if (data.products[p]) state.product = p;
+  if (varMeta(v)) state.variable = v;
+  if (data.intervals.includes(Number(h)) && h !== "") state.interval = Number(h);
+  if (view === "compare") state.view = "compare";
+}
+const writeHash = () => history.replaceState(null, "", `#${state.product}/${state.variable}/${state.interval}/${state.view === "compare" ? "compare" : "map"}`);
+
+function set(patch) { Object.assign(state, patch); writeHash(); render(); }
+
+function render() {
+  const P = prod(), unit = varMeta(state.variable).unit, change = state.interval > 0;
+
+  // status line
+  if (P.status === "ok") {
+    const age = Math.max(0, Math.round((Date.now() - Date.parse(data.generated)) / 60000));
+    const ageTxt = age < 90 ? `${age} min ago` : `${Math.round(age / 60)} h ago`;
+    $("#status").innerHTML = `<strong>${P.label}</strong> valid ${fmtDate(P.cycle, "UTC")} · ${fmtDate(P.cycle, TZ)}<br>` +
+      `analysis lag ${Math.floor(P.lag_minutes / 60)} h ${P.lag_minutes % 60} min · site built ${ageTxt}` +
+      (data.demo ? '<span class="chip">synthetic demo data</span>' : "");
+  } else {
+    $("#status").innerHTML = `<strong>${P.label}</strong> is not available right now.`;
+  }
+  $("#demo-note").textContent = data.demo ? "Showing synthetic demo data, not real observations." : "";
+
+  // controls
+  seg($("#seg-product"), Object.entries(data.products).map(([k, p]) => ({ value: k, label: p.label, disabled: p.status !== "ok" })),
+      state.product, v => set({ product: v }));
+  seg($("#seg-var"), data.variables.map(v => ({ value: v.key, label: v.label })), state.variable, v => set({ variable: v }));
+  seg($("#seg-int"), data.intervals.map(h => ({ value: h, label: intLabel(h), disabled: !panel(state.product, state.variable, h) })),
+      state.interval, v => set({ interval: v }));
+  seg($("#seg-view"), [{ value: "map", label: "Map" }, { value: "compare", label: "Compare all" }], state.view, v => set({ view: v }));
+
+  $("#single").hidden = state.view !== "map";
+  $("#compare").hidden = state.view !== "compare";
+  state.view === "map" ? renderSingle(unit, change) : renderCompare();
+  preload();
+}
+
+function renderSingle(unit, change) {
+  const img = $("#map"), empty = $("#empty"), p = panel();
+  if (!p) {
+    img.hidden = true; empty.hidden = false;
+    empty.textContent = "This time step is not available for the selected product.";
+  } else {
+    empty.hidden = true; img.hidden = false;
+    img.classList.add("loading");
+    img.onload = img.onerror = () => img.classList.remove("loading");
+    img.src = src(p);
+    img.alt = `${varMeta(state.variable).long_name}, ${change ? state.interval + "-hour change" : "current"}, ${prod().label}`;
+  }
+
+  // summary tiles
+  const lo = change ? "Largest drop" : "Low", hi = change ? "Largest rise" : "High";
+  $("#sum-title").textContent = `New England land area · ${intLabel(state.interval)}${change ? " change" : ""}`;
+  $("#th-lo").textContent = change ? "Min" : "Low"; $("#th-hi").textContent = change ? "Max" : "High";
+  const tile = (k, v) => `<div class="tile"><div class="k">${k}</div><div class="v">${num(v, change)}<span class="u">${unit}</span></div></div>`;
+  $("#tiles").innerHTML = p ? tile(lo, p.min) + tile("Average", p.mean) + tile(hi, p.max) : "";
+
+  // table view
+  $("#rows").replaceChildren(...data.intervals.map(h => {
+    const q = panel(state.product, state.variable, h), tr = document.createElement("tr");
+    tr.tabIndex = 0; tr.setAttribute("aria-selected", String(h === state.interval));
+    tr.innerHTML = `<td>${h === 0 ? "Current" : h + " h change"}</td><td>${num(q?.min, h > 0)}</td><td>${num(q?.mean, h > 0)}</td><td>${num(q?.max, h > 0)}</td>`;
+    if (q) {
+      const pick = () => set({ interval: h });
+      tr.addEventListener("click", pick);
+      tr.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } });
+    } else tr.style.opacity = .4;
+    return tr;
+  }));
+  $("#blurb").textContent = `${prod().long_name}: ${prod().blurb}`;
+}
+
+function renderCompare() {
+  $("#compare").replaceChildren(...data.intervals.map(h => {
+    const p = panel(state.product, state.variable, h), d = document.createElement("div");
+    d.className = "thumb" + (p ? "" : " na"); d.tabIndex = 0;
+    if (h === state.interval) d.setAttribute("aria-current", "true");
+    if (p) {
+      d.innerHTML = `<div class="cap">${h === 0 ? "Current" : h + "-hour change"}</div><img loading="lazy" alt="${varMeta(state.variable).long_name}, ${intLabel(h)}" src="${src(p)}">`;
+      const pick = () => set({ interval: h, view: "map" });
+      d.addEventListener("click", pick);
+      d.addEventListener("keydown", e => { if (e.key === "Enter") pick(); });
+    } else d.textContent = `${intLabel(h)}: not available`;
+    return d;
+  }));
+}
+
+let preloaded = new Set();
+function preload() {
+  // warm the cache for every step of the chosen variable, then the rest when idle
+  const queue = [];
+  for (const h of data.intervals) { const p = panel(state.product, state.variable, h); if (p) queue.push(src(p)); }
+  const rest = () => { for (const [pk, P] of Object.entries(data.products)) for (const v of Object.keys(P.panels || {}))
+      for (const h of data.intervals) { const p = panel(pk, v, h); if (p) queue.push(src(p)); } };
+  (window.requestIdleCallback || setTimeout)(() => { rest(); queue.forEach(u => { if (!preloaded.has(u)) { preloaded.add(u); new Image().src = u; } }); });
+}
+
+document.addEventListener("keydown", e => {
+  if (e.altKey || e.ctrlKey || e.metaKey || !data) return;
+  const avail = data.intervals.filter(h => panel(state.product, state.variable, h));
+  const i = avail.indexOf(state.interval);
+  if (e.key === "ArrowRight" && i < avail.length - 1) set({ interval: avail[i + 1] });
+  if (e.key === "ArrowLeft" && i > 0) set({ interval: avail[i - 1] });
+});
+window.addEventListener("hashchange", () => { readHash(); render(); });
+
+fetch("data.json", { cache: "no-store" }).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }).then(d => {
+  data = d;
+  const firstOk = Object.entries(d.products).find(([, p]) => p.status === "ok");
+  if (firstOk) state.product = firstOk[0];
+  readHash();
+  if (prod().status !== "ok" && firstOk) state.product = firstOk[0];
+  render();
+}).catch(err => { $("#status").textContent = "Could not load data.json (" + err.message + ")"; });
+</script>
+</body>
+</html>
