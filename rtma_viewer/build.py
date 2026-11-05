@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import boundaries, render
-from .config import INTERVALS, PRODUCTS, VARIABLES
+from .config import INTERVALS, PRODUCTS, SOURCE_VARIABLES, VARIABLES
 from .fields import FieldStore
 
 log = logging.getLogger("rtma_viewer")
@@ -34,8 +34,15 @@ def build_product(product, client, now, out: Path, cache: Path, layers, dpi: int
         return rec
     log.info("%s: newest cycle %s", product.key, cycle)
 
-    jobs = [(cycle - timedelta(hours=h), var) for var in VARIABLES.values() for h in INTERVALS]
+    jobs = [(cycle - timedelta(hours=h), var) for var in SOURCE_VARIABLES.values() for h in INTERVALS]
     fields = store.load(jobs)
+    for var in VARIABLES.values():                        # derived variables, computed from the cached fields
+        if var.derive is None:
+            continue
+        for h in INTERVALS:
+            t = cycle - timedelta(hours=h)
+            parts = [fields.get((t, k)) for k in var.requires]
+            fields[(t, var.key)] = None if any(a is None for a in parts) else var.derive(*parts)
     ctx = render.MapContext.build(store.grid, layers)
 
     total_png = 0

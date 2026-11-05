@@ -5,10 +5,11 @@ Design rules
 * **Fixed physical levels.**  Every hour uses identical levels, so colours mean the
   same thing in every frame, for both products, and at every interval.
 * **Interpolated in OKLab**, so the ramps are perceptually even (no muddy mid-tones).
-* **Fine discrete bins** (1 °F / 0.5 mph): smooth-looking shading, an exact legend, and
+* **Fine discrete bins** (1 °F for temperature and dew point): smooth-looking shading, an exact legend, and
   PNGs that still quantise losslessly to an indexed palette.
-* Sequential ramps (wind, gust, dew point) are monotone in lightness.  Temperature
-  uses the classic multi-hue operational ramp (-40..120 °F) with a deliberate blue/green break at 32 °F.
+* Dew point is a sequential ramp, monotone in lightness.  Temperature uses the classic multi-hue operational ramp
+  (-40..120 °F) with a deliberate blue/green break at 32 °F.  Wind speed/gust and apparent temperature use the NWS
+  legends (sampled from NWS Gray/Portland maps): whole-number bins, exact legend colours.
 * Change maps use the WPC-style ramp: uneven whole-number levels (±1, 3, 5, 8, 12, 16, 20, 25, 30, 35, 40, 50) with a
   white band for -1..+1, blues for cooling, oranges/reds/magenta for warming.  Identical for every interval
   (1/3/6/12/24 h) and every variable, so a colour always means the same amount of change.
@@ -18,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from matplotlib.colors import BoundaryNorm, ListedColormap, from_levels_and_colors, to_rgb
+from matplotlib.colors import from_levels_and_colors, to_hex, to_rgb
 
 # --------------------------------------------------------------------------- OKLab
 _M1 = np.array([[0.4122214708, 0.5363325363, 0.0514459929],
@@ -76,10 +77,35 @@ DEWPOINT_F = Ramp([  # dry sand -> green -> teal -> blue -> deep violet (monoton
     (55, "#3fa3ad"), (62, "#2a82b3"), (68, "#2f60ab"), (73, "#3d44a0"), (78, "#4d2c85"), (86, "#2f0f52"),
 ])
 
-WIND_MPH = Ramp([  # calm -> yellow -> orange -> red -> purple (monotone lightness)
-    (0, "#f6f7f2"), (5, "#fbe8a6"), (12, "#f9c25c"), (20, "#f28a3a"), (30, "#dc4a30"),
-    (40, "#b3203f"), (50, "#7c1d6f"), (60, "#471a73"), (70, "#1f1448"),
-])
+# --------------------------------------------------------------------------- NWS legends (sampled from NWS Gray/Portland maps)
+# Wind speed / gust (mph): NWS "Maximum Wind Gust" legend.  Edges are the whole-number bin starts of the legend labels
+# (0-5, 6-10, 11-15, ... 81-100, 101-120, 121-140, 141-150).  Same colours for sustained wind and gusts.
+_NWS_WIND_LEVELS = np.array([0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 100, 120, 140, 150], float)
+_NWS_WIND_COLORS = ["#103f78", "#225ea8", "#1d91c0", "#41b6c4", "#7fcdbb", "#b4d79e", "#dfff9e", "#ffffa6",
+                    "#ffe873", "#ffc400", "#ffaa00", "#ff5900", "#ff0000", "#a80000", "#6e0000", "#ffbee8", "#ff73df"]
+
+# Apparent temperature (°F): NWS "24-Hour Minimum Wind Chill Index Temperature" legend (<-60 .. 35+, 5 °F bins) joined to the
+# NWS "24-Hour Maximum Heat Index Temperature" legend (75-79 .. 120+, 5 °F bins).  Neither legend covers 35-75 °F (wind chill is
+# flat 35+, heat index is a single grey below 75), so that span is a smooth OKLab bridge from the wind-chill teal to the
+# first heat-index yellow.
+_WC_COLORS = ["#a51453",                                                      # < -60
+              "#e2266a", "#fb3d9e", "#f379c4", "#ff87f3", "#ffd2fc",          # -60 .. -35
+              "#ffffff", "#eeeeff", "#d0d1f0", "#b2aedc", "#897fc5", "#683ba3", "#211491",   # -35 .. 0
+              "#2151b0", "#147ad6", "#3db2ff", "#5edbff", "#87ebff", "#c1ffff",              # 0 .. 30
+              "#44e3d6"]                                                      # 30 .. 35
+_WC_TEAL = "#14adaa"                                                          # 35+
+_HI_COLORS = ["#ffffb4", "#ffed8a", "#ffc23e", "#ffa150", "#ff623e", "#f72e30", "#c5143a", "#94143a", "#6d1438"]  # 75 .. 120
+_HI_TOP = "#3c143c"                                                           # 120+
+
+
+def _apparent_colors() -> tuple[np.ndarray, list[str]]:
+    levels = np.arange(-60, 121, 5, dtype=float)                              # 36 bins
+    bridge = Ramp([(37.5, _WC_TEAL), (77.5, _HI_COLORS[0])])
+    mid = [to_hex(c) for c in bridge(np.arange(40, 75, 5) + 2.5)]            # 40-45 .. 70-75
+    cols = _WC_COLORS + [_WC_TEAL] + mid + _HI_COLORS + [_HI_TOP]             # under + 36 bins + over
+    assert len(cols) == len(levels) + 1
+    return levels, cols
+
 
 # --------------------------------------------------------------------------- styles
 @dataclass
@@ -129,11 +155,23 @@ def change_style() -> Style:
     return Style(_WPC_LEVELS.copy(), cols, "both", _WPC_LEVELS.copy(), signed=True, uniform=True, tick_fontsize=10.5)
 
 
+def wind_style() -> Style:
+    cols = np.array([to_rgb(c) for c in _NWS_WIND_COLORS] + [to_rgb(_NWS_WIND_COLORS[-1])])   # over = top colour
+    return Style(_NWS_WIND_LEVELS.copy(), cols, "max", _NWS_WIND_LEVELS.copy(), uniform=True, tick_fontsize=10.5)
+
+
+def apparent_style() -> Style:
+    levels, cols = _apparent_colors()
+    return Style(levels, np.array([to_rgb(c) for c in cols]), "both", np.arange(-60, 121, 10, dtype=float),
+                 tick_fontsize=11)
+
+
 _ABS = {
     "temp": lambda: sequential_style(TEMP_F, -40, 120, 1, 10, "both"),
     "dewpoint": lambda: sequential_style(DEWPOINT_F, -20, 86, 1, 10, "both"),
-    "wind": lambda: sequential_style(WIND_MPH, 0, 70, 0.5, 10, "max"),
-    "gust": lambda: sequential_style(WIND_MPH, 0, 70, 0.5, 10, "max"),
+    "wind": wind_style,
+    "gust": wind_style,
+    "apparent": apparent_style,
 }
 
 def style_for(var_key: str, interval: int) -> Style:

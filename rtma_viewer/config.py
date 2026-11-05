@@ -6,6 +6,8 @@ from typing import Callable
 
 import numpy as np
 
+from .derived import apparent_temperature
+
 
 # --------------------------------------------------------------------------- products
 @dataclass(frozen=True)
@@ -49,6 +51,8 @@ class Variable:
     grib_level: str       # level string in the .idx file
     convert: Callable = field(compare=False, default=lambda a: a)
     components: tuple[str, ...] = ()   # fallback: hypot of these 10 m components if grib_var is absent
+    requires: tuple[str, ...] = ()     # derived variable: keys of the source variables it is computed from ...
+    derive: Callable | None = field(compare=False, default=None)   # ... as derive(*fields) in display units
 
 
 VARIABLES: dict[str, Variable] = {
@@ -57,7 +61,11 @@ VARIABLES: dict[str, Variable] = {
     "wind": Variable("wind", "Wind speed", "10m Wind Speed", "mph", "WIND", "10 m above ground", _ms_to_mph,
                      components=("UGRD", "VGRD")),
     "gust": Variable("gust", "Wind gust", "10m Wind Gust", "mph", "GUST", "10 m above ground", _ms_to_mph),
+    # derived (no GRIB message of its own): NDFD apparent temperature = wind chill / ambient / heat index
+    "apparent": Variable("apparent", "Apparent temp", "Apparent Temperature", "°F", "", "",
+                         requires=("temp", "dewpoint", "wind"), derive=apparent_temperature),
 }
+SOURCE_VARIABLES: dict[str, Variable] = {k: v for k, v in VARIABLES.items() if v.derive is None}
 
 # Current field + change versus N hours earlier
 INTERVALS: tuple[int, ...] = (0, 1, 3, 6, 12, 24)

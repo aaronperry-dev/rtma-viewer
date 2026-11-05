@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import numpy as np
 import pytest
 
-from rtma_viewer.config import PRODUCTS, VARIABLES
+from rtma_viewer.config import PRODUCTS, SOURCE_VARIABLES
 from rtma_viewer.fields import FieldStore
 from rtma_viewer.testing import FakeS3
 
@@ -30,7 +30,7 @@ def test_no_cycle_means_none(tmp_path):
 
 def test_byte_range_fetch_values_and_cache(s3, tmp_path):
     st = FieldStore(PRODUCTS["rtma"], s3, tmp_path)
-    jobs = [(HOUR, v) for v in VARIABLES.values()]
+    jobs = [(HOUR, v) for v in SOURCE_VARIABLES.values()]
     s3.range_requests.clear()
     out = st.load(jobs)
 
@@ -62,12 +62,12 @@ def test_wind_falls_back_to_components(tmp_path):
             return blob, "\n".join(l for l in idx.splitlines() if ":WIND:" not in l) + "\n"
 
     st = FieldStore(PRODUCTS["rtma"], NoWind(NOW), tmp_path)
-    out = st.load([(HOUR, VARIABLES["wind"])])
+    out = st.load([(HOUR, SOURCE_VARIABLES["wind"])])
     truth = st.src.client.grid.fields_si(HOUR)["WIND"][st.grid.slices] * 2.2369362921
     assert np.allclose(out[(HOUR, "wind")], truth, atol=0.2)
 
 
 def test_missing_hour_is_none(tmp_path):
     s3 = FakeS3(NOW, missing={("rtma2p5", 6)})
-    out = FieldStore(PRODUCTS["rtma"], s3, tmp_path).load([(HOUR - timedelta(hours=6), VARIABLES["temp"])])
+    out = FieldStore(PRODUCTS["rtma"], s3, tmp_path).load([(HOUR - timedelta(hours=6), SOURCE_VARIABLES["temp"])])
     assert out[(HOUR - timedelta(hours=6), "temp")] is None
