@@ -83,3 +83,51 @@ def test_period_products_say_so_in_the_header():
     left, rest, rb, rr = render.panel_text(PRODUCTS["rtma"], VARIABLES["tmin24"], 0, t, None)
     assert "24-Hour Minimum" in rest and rest.endswith("(°F)") and "(past 24 h)" in rr
     assert render.panel_text(PRODUCTS["rtma"], VARIABLES["fltcat"], 0, t, None)[1] == ": Flight Category (Visibility and Ceiling)"
+
+
+# --------------------------------------------------------------------------- reference lines (32 F red, 0 F blue)
+def test_temperature_maps_carry_the_32f_and_0f_lines():
+    from rtma_viewer.config import TEMP_LINES, PANEL_VARIABLES
+    assert TEMP_LINES == ((32.0, "#e00000"), (0.0, "#0a3cff"))
+    on = {k for k, v in PANEL_VARIABLES.items() if v.lines}
+    assert on == {"temp", "dewpoint", "wetbulb", "apparent", "slt", "tmax24", "tmin24", "wcmin24"}
+    assert not PANEL_VARIABLES["trange24"].lines and not PANEL_VARIABLES["wind"].lines and not PANEL_VARIABLES["dpdep"].lines
+
+
+def _render_gradient(tmp_path, key, lo, hi, interval=0, name="m.png", lines=True):
+    import dataclasses
+    from PIL import Image
+    from rtma_viewer import boundaries as bnd
+    from rtma_viewer.grib import Grid
+    ny, nx = 120, 160
+    lon, lat = np.meshgrid(np.linspace(-74.5, -66.5, nx), np.linspace(40.5, 47.8, ny))
+    grid = Grid(lat.astype(np.float32), lon.astype(np.float32), (0, ny, 0, nx))
+    ctx = render.MapContext.build(grid, bnd.load(render.PROJ), stations=[])
+    field = np.broadcast_to(np.linspace(lo, hi, nx), (ny, nx)).astype(np.float32).copy()
+    var = VARIABLES[key] if lines else dataclasses.replace(VARIABLES[key], lines=())
+    style, signed = render.style_and_flags(var, interval)
+    out = tmp_path / name
+    render.render_panel(ctx, field, style, texts=("t", "", "v", ""), signed=signed, out=out, dpi=60, var=var)
+    return np.asarray(Image.open(out).convert("RGB")).astype(int)
+
+
+def _count(img, rgb, tol=40):
+    return int((np.abs(img - np.array(rgb)).max(axis=-1) <= tol).sum())
+
+
+def test_lines_are_drawn_only_where_the_field_crosses_the_value(tmp_path):
+    both = _render_gradient(tmp_path, "temp", -20, 60, name="both.png")          # crosses 0 F and 32 F
+    warm = _render_gradient(tmp_path, "temp", 20, 60, name="warm.png")           # crosses 32 F only
+    none = _render_gradient(tmp_path, "temp", 40, 60, name="none.png")           # crosses neither
+    red, blue = (0xe0, 0, 0), (0x0a, 0x3c, 0xff)
+    assert _count(both, red) > 200 and _count(both, blue) > 200
+    assert _count(warm, red) > 200 and _count(warm, blue) < 20
+    assert _count(none, red) < 20 and _count(none, blue) < 20
+
+
+def test_change_maps_have_no_lines(tmp_path):
+    with_lines = _render_gradient(tmp_path, "temp", -20, 60, interval=6, name="a.png")
+    without = _render_gradient(tmp_path, "temp", -20, 60, interval=6, name="b.png", lines=False)
+    assert np.array_equal(with_lines, without)                                    # identical: nothing was drawn
+    plain = _render_gradient(tmp_path, "temp", -20, 60, name="c.png", lines=False)
+    assert _count(plain, (0xe0, 0, 0)) < 20 and _count(plain, (0x0a, 0x3c, 0xff)) < 20   # the ramp itself has neither colour
