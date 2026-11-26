@@ -157,3 +157,49 @@ def test_terrain_style_has_a_sea_level_bin():
     s = c.style_for("terrain", 0)
     assert s.levels[0] == 0 and s.levels[1] == 20 and s.levels[-1] == 6000
     assert s.colors[0][2] > s.colors[0][0]                                         # sea: bluish, not the lowland green
+
+
+# ------------------------------------------------------------------------------------------ winter / kinematic styles
+def test_rh_ice_legend_breaks_at_100():
+    s = c.style_for("rhi", 0)
+    assert 100 in s.levels and s.extend == "max" and s.levels[-1] == 140
+    i = int(np.where(s.levels == 100)[0][0])                  # bin 98-100 (liquid water range) vs 100-102 (ice-supersaturated)
+    below, above = s.colors[i - 1], s.colors[i]
+    assert above[0] > above[1] and above[2] > above[1]        # violet: red and blue both beat green
+    assert below[2] > below[0]                                 # blue below the break
+
+
+def test_diverging_styles_are_symmetric_blue_to_warm_with_white_centre():
+    for key in ("tadv", "dadv", "conv", "vort", "fgen", "upslope"):
+        s = c.style_for(key, 0)
+        assert s.extend == "both" and s.signed and np.allclose(s.levels, -s.levels[::-1]), key
+        mid = len(s.colors) // 2
+        assert np.ptp(s.colors[mid]) < 0.02 and s.levels[len(s.levels) // 2 - 1] < 0 < s.levels[len(s.levels) // 2], key
+        assert s.colors[0][2] > s.colors[0][0] and s.colors[-1][0] > s.colors[-1][2], key     # blue negative, warm positive
+        L = lightness(s)
+        assert np.all(np.diff(L[: mid + 1]) >= -2e-3) and np.all(np.diff(L[mid:]) <= 2e-3), key   # darker toward both ends
+    import pytest
+    with pytest.raises(AssertionError):
+        c.diverging_style([-3, -1, 1])                         # needs symmetric levels, even count
+
+
+def test_categorical_styles_label_each_class():
+    for key, labels in (("fltcat", ["LIFR", "IFR", "MVFR", "VFR"]), ("frostbite", ["None", "30 min", "10 min", "5 min"])):
+        s = c.style_for(key, 0)
+        assert [s.tick_labels[i] for i in range(4)] == labels and list(s.ticks) == [0, 1, 2, 3], key
+        cmap, norm = s.cmap_norm()
+        for k in range(4):                                     # integer class k gets exactly colour k
+            assert np.allclose(cmap(norm(np.array([float(k)])))[0][:3], s.colors[k]), (key, k)
+    f = c.style_for("fltcat", 0).colors                        # LIFR magenta, IFR red, MVFR blue, VFR green
+    assert f[0][0] > f[0][1] and f[0][2] > f[0][1] and f[1][0] > f[1][2] and f[2][2] > f[2][0] and f[3][1] > f[3][0]
+
+
+def test_integer_count_and_hours_styles():
+    s = c.style_for("ftx24", 0)
+    assert list(s.ticks) == list(range(9)) and s.levels[0] == -0.5 and s.extend == "max"      # tick under the middle of each block
+    h = c.style_for("frzhrs24", 0)
+    assert h.levels[0] == 0 and h.levels[-1] == 24 and h.extend == "neither"
+    assert np.array_equal(c.style_for("wcmin24", 0).levels, c.style_for("apparent", 0).levels)   # NWS 24-h min wind chill legend
+    assert np.array_equal(c.style_for("gustmax24", 0).levels, c.style_for("gust", 0).levels)
+    for k in ("slt", "tmax24", "tmin24"):
+        assert np.array_equal(c.style_for(k, 0).levels, c.style_for("temp", 0).levels)          # same legend: directly comparable

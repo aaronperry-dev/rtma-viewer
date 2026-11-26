@@ -35,12 +35,12 @@ def test_byte_range_fetch_values_and_cache(s3, tmp_path):
     s3.range_requests.clear()
     out = st.load(jobs)
 
-    # one ranged GET per variable - never the whole file (and never the UGRD / VGRD / SPFH messages we do not use)
+    # one ranged GET per variable - never the whole file (the specific-humidity message is the only one we do not use)
     assert len(s3.range_requests) == n
     # (the last message in an idx has no known end, so it is an open-ended "bytes=N-" request)
     assert all(re.fullmatch(r"bytes=\d+-\d*", r) for _, r in s3.range_requests)
     blob, _ = s3._file("rtma2p5", HOUR)
-    assert st.src.bytes_downloaded < 0.85 * len(blob)
+    assert st.src.bytes_downloaded < 0.95 * len(blob)
 
     # decoded values match the truth to within GRIB packing precision
     truth = s3.grid.fields_si(HOUR)
@@ -112,15 +112,27 @@ def test_fetch_plan_only_asks_for_what_the_panels_need():
     need = hours_needed()
     assert set(need) == set(SOURCE_VARIABLES)
     assert need["terrain"] == (0,)                                     # static: newest cycle only
-    for k in ("vis", "ceiling", "cloud", "wdir_raw"):
+    for k in ("vis", "ceiling", "cloud", "wdir_raw", "u10", "v10"):
         assert need[k] == (0,), k                                       # current-field-only variables
-    for k in ("temp", "dewpoint", "wind", "gust", "pressure"):
+    for k in ("dewpoint", "pressure"):
         assert need[k] == INTERVALS, k                                  # feed change maps (directly or via derived fields)
-    # every derived variable's inputs are loaded for every hour it is drawn at
+    for k in ("temp", "wind", "gust"):
+        assert need[k] == tuple(range(25)), k                           # ... and the 24-hour summaries use every hourly analysis
+    # every derived variable's inputs exist for every hour it is drawn at (series variables: and the hours before it)
     for v in VARIABLES.values():
-        if v.derive is not None:
-            for k in v.requires:
-                assert set(panel_hours(v)) <= set(need[k]) or SOURCE_VARIABLES[k].static, (v.key, k)
+        if v.derive is None:
+            continue
+        hours = {h + i for h in panel_hours(v) for i in range(v.series + 1)}
+        for k in v.requires:
+            dep = VARIABLES[k]
+            have = set(need[k]) if dep.derive is None else set(panel_hours(dep))
+            assert hours <= have or dep.static, (v.key, k)
+    # derived-from-derived variables come after what they use (the build computes in dictionary order)
+    order = list(VARIABLES)
+    for v in VARIABLES.values():
+        for k in v.requires:
+            if VARIABLES[k].derive is not None:
+                assert order.index(k) < order.index(v.key), (v.key, k)
 
 
 def test_wind_falls_back_to_components(tmp_path):
@@ -159,6 +171,36 @@ def test_mslp_round_trips_through_grib_cache_and_derivation(s3, tmp_path):
 
 def test_hidden_inputs_are_fetched_but_have_no_page_entry():
     hidden = [k for k, v in VARIABLES.items() if v.hidden]
-    assert hidden == ["wdir_raw"] and "wdir_raw" in SOURCE_VARIABLES and "wdir_raw" not in PANEL_VARIABLES
+    assert hidden == ["wdir_raw", "u10", "v10"] and all(k in SOURCE_VARIABLES and k not in PANEL_VARIABLES for k in hidden)
     assert "wdir" in PANEL_VARIABLES and VARIABLES["wdir"].requires == ("wdir_raw", "wind")
-    assert hours_needed()["wind"] == INTERVALS                      # still needed at every hour for the other panels
+    assert set(INTERVALS) <= set(hours_needed()["wind"])           # still needed at every change interval for the other panels
+
+
+def test_wind_components_round_trip_at_millimetre_per_second_precision(s3, tmp_path):
+    """u / v feed derivatives, so they are packed as uint16 at 0.002 m/s instead of float16 (0.03 m/s at 20 m/s)."""
+    st = FieldStore(PRODUCTS["rtma"], s3, tmp_path)
+    out = st.load([(HOUR, SOURCE_VARIABLES["u10"]), (HOUR, SOURCE_VARIABLES["v10"])])
+    truth = s3.grid.fields_si(HOUR)
+    g = st.grid.slices
+    assert np.abs(out[(HOUR, "u10")] - truth["UGRD"][g]).max() < 0.005 and np.abs(out[(HOUR, "v10")] - truth["VGRD"][g]).max() < 0.005
+    assert np.load(st._path(HOUR, SOURCE_VARIABLES["u10"])).dtype == np.uint16
+    # grid-relative magnitude is the speed
+    assert np.allclose(np.hypot(out[(HOUR, "u10")], out[(HOUR, "v10")]), truth["WIND"][g], atol=0.01)
+
+
+def test_series_inputs_stack_hours_newest_first_and_tolerate_gaps():
+    from rtma_viewer.build import series_inputs
+    var = VARIABLES["wcmin24"]                                            # needs temp + wind over 25 hourly analyses
+    f = {(HOUR - timedelta(hours=i), k): np.full((2, 3), float(i + (100 if k == "wind" else 0)), np.float32)
+         for i in range(25) for k in ("temp", "wind")}
+    t, w = series_inputs(f, var, HOUR)
+    assert t.shape == (25, 2, 3) and t[0, 0, 0] == 0 and t[24, 0, 0] == 24 and w[3, 0, 0] == 103
+    for i in (5, 6, 7):                                                   # a missing hour in either input blanks that plane in both
+        f[(HOUR - timedelta(hours=i), "temp" if i != 6 else "wind")] = None
+    t, w = series_inputs(f, var, HOUR)
+    assert np.isnan(t[5]).all() and np.isnan(t[6]).all() and np.isnan(w[7]).all() and t[8, 0, 0] == 8
+    for i in range(8, 20):                                                # more than 25 % missing: no summary at all
+        f[(HOUR - timedelta(hours=i), "temp")] = None
+    assert series_inputs(f, var, HOUR) is None
+    f2 = {k: v for k, v in f.items() if k[0] != HOUR}                     # the valid hour itself missing: nothing to show
+    assert series_inputs(f2, var, HOUR) is None

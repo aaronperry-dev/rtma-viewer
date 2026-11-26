@@ -176,3 +176,112 @@ def test_wind_direction_masks_calm_air():
     assert np.isnan(a[0]) and np.isnan(a[2]) and np.isnan(a[5])               # calm (< 2 mph) or missing -> undefined
     assert a[1] == 0.0 and a[3] == 359.0 and a[4] == 90.0                       # a real north wind keeps its direction
     assert VARIABLES["wdir"].derive is d.wind_direction
+
+
+# ------------------------------------------------------------------------------------------ winter diagnostics
+def test_rh_ice_matches_saturation_pressures_and_water_above_freezing():
+    # exactly saturated over liquid water: RH_ice = e_w(T) / e_i(T)  (1.2540 / 1.0320 hPa at -20 C is 121.5 %)
+    for t_c, expect in ((-20.0, 121.5), (-40.0, 148.0), (-9.44, 109.8)):
+        assert float(d.relative_humidity_ice(C2F(t_c), C2F(t_c))) == pytest.approx(expect, abs=1.0), t_c
+    assert float(d.sat_vapor_pressure_ice(-20.0)) == pytest.approx(1.032, abs=0.003)      # standard tables
+    assert float(d.sat_vapor_pressure_ice(-40.0)) == pytest.approx(0.1283, abs=0.001)
+    # at or above freezing ice does not exist: identical to ordinary RH (continuous across 0 C within 0.1 %)
+    for t, td in ((50.0, 40.0), (33.0, 30.0), (80.0, 60.0)):
+        assert float(d.relative_humidity_ice(t, td)) == pytest.approx(float(d.relative_humidity(t, td)), abs=1e-3)
+    assert float(d.relative_humidity_ice(32.0, 32.0)) == pytest.approx(100.0, abs=0.2)
+    # supersaturated over ice whenever saturated over water below freezing, and not clipped at 100
+    t = np.linspace(-40, 31, 60)
+    assert np.all(d.relative_humidity_ice(t, t) > 100.0) and d.relative_humidity_ice(t, t).dtype == np.float32
+    assert np.isnan(d.relative_humidity_ice(np.nan, 10.0))
+
+
+def test_mixing_ratio_matches_metpy_and_is_independent_of_temperature():
+    mpcalc = pytest.importorskip("metpy.calc")
+    units = pytest.importorskip("metpy.units").units
+    for td_f, p in ((32.0, 1000.0), (-10.0, 1000.0), (50.0, 900.0), (20.0, 850.0)):
+        td_c = (td_f - 32) / 1.8
+        e = mpcalc.saturation_vapor_pressure(td_c * units.degC)
+        ref = float(mpcalc.mixing_ratio(e, p * units.hPa).to("g/kg").m)
+        assert float(d.mixing_ratio(td_f, p)) == pytest.approx(ref, rel=0.01), (td_f, p)
+    assert float(d.mixing_ratio(32.0, 1000.0)) == pytest.approx(3.82, abs=0.05)
+    assert float(d.mixing_ratio(-10.0, 1000.0)) < 1.0                                    # "bitter, dry Arctic air"
+    assert float(d.mixing_ratio(10.0, 1000.0)) == pytest.approx(1.5, abs=0.1)            # the number quoted on the page
+
+
+def test_sea_level_temperature_adds_standard_lapse():
+    assert float(d.sea_level_temperature(10.0, 3000.0)) == pytest.approx(10.0 + 3 * 3.57, abs=0.05)
+    assert float(d.sea_level_temperature(10.0, 1000.0)) == pytest.approx(10.0 + 11.7 / 3.28084, abs=0.01)   # 6.5 K/km
+    assert float(d.sea_level_temperature(10.0, -50.0)) == 10.0                            # below sea level: no adjustment
+    assert float(d.sea_level_dewpoint(10.0, 3281.0)) == pytest.approx(10.0 + 3.24, abs=0.05)   # 1.8 K/km = 3.24 F/km
+
+
+@pytest.mark.parametrize("vis, ceil, cat", [
+    (10, 12000, 3), (5.01, 3001, 3),                    # VFR: ceiling > 3000 and visibility > 5
+    (5.0, 12000, 2), (10, 3000, 2), (3.0, 12000, 2), (10, 1000, 2),   # MVFR edges (inclusive)
+    (2.9, 12000, 1), (10, 999, 1), (1.0, 12000, 1), (10, 500, 1),     # IFR
+    (0.9, 12000, 0), (10, 499, 0), (0.0, 0, 0),         # LIFR
+    (0.5, 2000, 0), (2, 400, 0), (4, 800, 1),           # the worse of the two wins
+])
+def test_flight_category_boundaries(vis, ceil, cat):
+    assert float(d.flight_category(vis, ceil)) == cat
+
+
+def test_flight_category_missing_is_nan():
+    assert np.isnan(d.flight_category(np.nan, 5000.0)) and np.isnan(d.flight_category(5.0, np.nan))
+    assert d.FLIGHT_CATEGORIES == ("LIFR", "IFR", "MVFR", "VFR")
+
+
+@pytest.mark.parametrize("t, v, cat", [
+    (0, 15, 1),          # NWS: 0 F / 15 mph -> wind chill -19 F -> frostbite in 30 minutes
+    (-15, 20, 2),        # -42 F -> ~10 minutes (the commonly quoted NWS example)
+    (-20, 25, 3),        # -51 F -> 5 minutes
+    (10, 10, 0), (30, 20, 0), (60, 30, 0),      # no frostbite concern
+    (-30, 2, 1),         # light wind: wind chill is not defined, so the air temperature itself is compared (-30 F: 30 min)
+    (-10, 2, 0), (-50, 0, 3),                   # ... which only registers in extreme cold
+])
+def test_frostbite_zones_follow_the_nws_chart(t, v, cat):
+    assert float(d.frostbite_category(t, v)) == cat
+
+
+def test_series_extremes_and_range_ignore_missing_hours():
+    s = np.array([[[10.0, 5.0]], [[np.nan, 7.0]], [[30.0, 6.0]], [[20.0, np.nan]]], np.float32)   # (4, 1, 2)
+    assert d.series_max(s).tolist() == [[30.0, 7.0]] and d.series_min(s).tolist() == [[10.0, 5.0]]
+    assert d.series_range(s).tolist() == [[20.0, 2.0]]
+    blank = np.full((3, 1, 1), np.nan, np.float32)
+    assert np.isnan(d.series_max(blank)).all() and np.isnan(d.series_range(blank)).all()
+
+
+def test_hours_at_or_below_freezing_interpolates_linearly():
+    i = np.arange(25, dtype=np.float32)
+    ramp = (20.0 + i)[:, None, None]                                   # index 0 = now = 20 F ... 24 h ago = 44 F
+    assert float(d.hours_at_or_below(ramp)[0, 0]) == pytest.approx(12.0, abs=1e-4)       # 20..32 F: exactly 12 h at/below
+    assert float(d.threshold_crossings(ramp)[0, 0]) == 1.0
+    assert float(d.hours_at_or_below(ramp + 20)[0, 0]) == 0.0 and float(d.hours_at_or_below(ramp - 40)[0, 0]) == 24.0
+    # a crossing inside an interval counts its fraction: -1 F then +3 F spends 1/4 of the hour at or below 0
+    assert float(d.hours_at_or_below(np.array([-1.0, 3.0], np.float32)[:, None, None], 0.0)[0, 0]) == pytest.approx(0.25)
+    # freeze, thaw, freeze, thaw: three crossings; the last one is the boundary at exactly 32 (<= counts as frozen)
+    zig = np.array([30, 34, 30, 34, 34], np.float32)[:, None, None]
+    assert float(d.threshold_crossings(zig)[0, 0]) == 3.0
+    # a missing hour costs two intervals: the total is rescaled to the full period (approximate by design)
+    gap = ramp.copy()
+    gap[5] = np.nan
+    assert float(d.hours_at_or_below(gap)[0, 0]) == pytest.approx(12.0, abs=1.2)
+    assert np.isnan(d.hours_at_or_below(np.full((5, 1, 1), np.nan, np.float32))[0, 0])
+
+
+def test_min_wind_chill_matches_hourly_minimum():
+    t = np.array([[[30.0]], [[10.0]], [[-5.0]], [[60.0]]], np.float32)
+    v = np.array([[[10.0]], [[2.0]], [[25.0]], [[40.0]]], np.float32)
+    expect = min(float(d.wind_chill(30, 10)), 10.0, float(d.wind_chill(-5, 25)), 60.0)       # calm hour: air temperature
+    assert float(d.min_wind_chill(t, v)[0, 0]) == pytest.approx(expect, abs=1e-3)
+    assert d.min_wind_chill(t, v).dtype == np.float32
+
+
+def test_winter_variables_are_registered():
+    for key, req, series in (("slt", ("temp", "terrain"), 0), ("rhi", ("temp", "dewpoint"), 0), ("mixr", ("dewpoint", "pressure"), 0),
+                             ("tmax24", ("temp",), 24), ("tmin24", ("temp",), 24), ("trange24", ("temp",), 24),
+                             ("frzhrs24", ("temp",), 24), ("ftx24", ("temp",), 24), ("wcmin24", ("temp", "wind"), 24),
+                             ("gustmax24", ("gust",), 24), ("frostbite", ("temp", "wind"), 0), ("fltcat", ("vis", "ceiling"), 0)):
+        v = VARIABLES[key]
+        assert v.requires == req and v.series == series and not v.changes and key not in SOURCE_VARIABLES, key
+    assert VARIABLES["fltcat"].categories == d.FLIGHT_CATEGORIES and len(VARIABLES["frostbite"].categories) == 4

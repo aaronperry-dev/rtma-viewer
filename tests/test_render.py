@@ -57,3 +57,29 @@ def test_region_stats_normal_and_circular():
     south = np.full((2, 2), 180.0)
     assert render.region_stats(SimpleNamespace(land=np.ones((2, 2), bool)), south, circular=True)["mean"] == pytest.approx(180.0)
     assert render.region_stats(SimpleNamespace(land=np.zeros((2, 2), bool)), south) == {"min": None, "mean": None, "max": None}
+
+
+def test_categorical_stats_report_area_shares():
+    ctx = SimpleNamespace(land=np.ones((2, 5), bool))
+    f = np.array([[0, 1, 1, 2, 3], [3, 3, 3, 3, np.nan]], float)
+    st = render.region_stats(ctx, f, categories=("LIFR", "IFR", "MVFR", "VFR"))
+    assert st["shares"] == pytest.approx([100 / 9, 200 / 9, 100 / 9, 500 / 9], abs=0.06)
+    assert st["min"] is None and st["mean"] is None and sum(st["shares"]) == pytest.approx(100.0, abs=0.2)
+
+
+def test_class_labels_and_signed_current_fields():
+    assert [render.label_text(VARIABLES["fltcat"], v, False) for v in (0, 1, 2, 3)] == ["LIFR", "IFR", "MVFR", "VFR"]
+    assert [render.label_text(VARIABLES["frostbite"], v, False) for v in (0, 1, 2, 3)] == ["", "30", "10", "5"]
+    assert render.label_text(VARIABLES["tadv"], 3.4, True) == "+3" and render.label_text(VARIABLES["tadv"], -2.6, True) == "-3"
+    assert render.label_text(VARIABLES["conv"], 12.0, False) == "+12"            # diverging: signed even on the "current" map
+    assert render.label_text(VARIABLES["pgrad"], 0.84, False) == "0.8"
+    assert render.style_and_flags(VARIABLES["conv"], 0)[1] is True and render.style_and_flags(VARIABLES["temp"], 0)[1] is False
+
+
+def test_period_products_say_so_in_the_header():
+    from datetime import datetime, timezone
+    from rtma_viewer.config import PRODUCTS
+    t = datetime(2026, 11, 26, 2, tzinfo=timezone.utc)
+    left, rest, rb, rr = render.panel_text(PRODUCTS["rtma"], VARIABLES["tmin24"], 0, t, None)
+    assert "24-Hour Minimum" in rest and rest.endswith("(°F)") and "(past 24 h)" in rr
+    assert render.panel_text(PRODUCTS["rtma"], VARIABLES["fltcat"], 0, t, None)[1] == ": Flight Category (Visibility and Ceiling)"
