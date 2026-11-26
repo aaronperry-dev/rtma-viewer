@@ -414,6 +414,8 @@ _ABS = {
     "wdir": direction_style,
     "pressure": lambda: sequential_style(PRESSURE_MB, 800, 1050, 2, 25, "both"),
     "mslp": lambda: sequential_style(MSLP_MB, 940, 1060, 2, 10, "both"),
+    "sfcwpc": lambda: sequential_style(MSLP_MB, 940, 1060, 2, 10, "both"),
+    "sfcobj": lambda: sequential_style(MSLP_MB, 940, 1060, 2, 10, "both"),
     "vis": visibility_style,
     "ceiling": ceiling_style,
     "cloud": lambda: sequential_style(CLOUD_PCT, 0, 100, 5, 10, "neither"),

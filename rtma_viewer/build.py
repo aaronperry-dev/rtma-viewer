@@ -16,9 +16,10 @@ from pathlib import Path
 
 import numpy as np
 
-from . import boundaries, render
+from . import boundaries, fronts, objective, render, symbols
 from .config import FT_PER_M, INTERVALS, PANEL_VARIABLES, PRODUCTS, SOURCE_VARIABLES, VARIABLES, hours_needed, panel_hours
 from .fields import FieldStore
+from . import kinematics as kin
 from .kinematics import Geometry
 
 log = logging.getLogger("rtma_viewer")
@@ -60,7 +61,34 @@ def available_hours(fields: dict, var, valid: datetime) -> int:
     return count
 
 
-def build_product(product, client, now, out: Path, cache: Path, layers, dpi: int, colors: int) -> dict:
+def surface_overlay(var, product, cycle: datetime, fields: dict, ctx, geom, archive) -> tuple | None:
+    """(callable for render_panel's ``overlay``, short label) drawing fronts and pressure centres for ``var.overlay`` at ``cycle``,
+    or None when there is nothing to draw (no bulletin near that time, missing inputs)."""
+    to_xy = lambda lon, lat: render.PROJ.transform_points(render.PC, np.asarray(lon, float), np.asarray(lat, float))
+    if var.overlay == "wpc":
+        an = archive.nearest(cycle, max_back=fronts.MAX_BACK) if archive is not None else None
+        if an is None:
+            log.warning("%s %s: no WPC analysis within %d min of %s", product.key, var.key, int(fronts.MAX_GAP.total_seconds() // 60), cycle)
+            return None
+        label = f"WPC analysis valid {an.valid:%H}Z" + ("" if an.valid == cycle else f" - {abs((cycle - an.valid).total_seconds()) / 3600:.0f} h {'before' if an.valid < cycle else 'after'} this map")
+    else:
+        need = ("temp", "dewpoint", "pressure", "mslp", "u10", "v10", "terrain")
+        f = {k: fields.get((cycle, k)) for k in need}
+        if any(v is None for v in f.values()) or geom is None:
+            return None
+        an = objective.analyze(cycle, f["temp"], f["dewpoint"], f["pressure"], f["mslp"], f["u10"], f["v10"], f["terrain"],
+                               ctx.grid.lat, ctx.grid.lon, geom, to_xy, objective.coastal_barrier(ctx.layers.coast, ctx.layers.lakes))
+        label = "Objective (experimental)"
+    t = fields.get((cycle, "temp")); td = fields.get((cycle, "dewpoint")); p = fields.get((cycle, "pressure"))
+    warmer = None
+    if t is not None and td is not None and p is not None:
+        tau = kin.smooth(objective.equivalent_potential_temperature(t, td, p), objective.SIGMA_TAU)
+        warmer = symbols.FieldSampler(ctx.x, ctx.y, tau)
+    log.info("%s %s: %d fronts, %d pressure centres (%s)", product.key, var.key, len(an.fronts), len(an.centers), label)
+    return (lambda ax, extent: symbols.draw_analysis(ax, an, to_xy, extent, warmer, label)), an
+
+
+def build_product(product, client, now, out: Path, cache: Path, layers, dpi: int, colors: int, wpc: bool = False) -> dict:
     t0 = time.time()
     store = FieldStore(product, client, cache)
     cycle = store.latest_cycle(now)
@@ -97,6 +125,9 @@ def build_product(product, client, now, out: Path, cache: Path, layers, dpi: int
                     res = None
             fields[(t, var.key)] = res
     ctx = render.MapContext.build(store.grid, layers)
+    archive = fronts.Archive(cache / "wpc") if any(v.overlay == "wpc" for v in PANEL_VARIABLES.values()) else None
+    if archive is not None and wpc:
+        archive.update()                                  # file the newest WPC bulletin (the server keeps only that one)
 
     total_png = 0
     terrain_ft = fields.get((cycle, "terrain"))
@@ -119,11 +150,18 @@ def build_product(product, client, now, out: Path, cache: Path, layers, dpi: int
             data = cur if h == 0 else cur - prev
             style, signed = render.style_and_flags(var, h)
             have = hours.get((cycle - timedelta(hours=h), var.key)) if var.period_hours else None
+            ov = None
+            if var.overlay:
+                got = surface_overlay(var, product, cycle, fields, ctx, geom, archive)
+                if got is None:
+                    rec["panels"][var.key][str(h)] = None
+                    continue
+                ov = got[0]
             texts = render.panel_text(product, var, h, cycle, ref_t if h else None, hours=have)
             rel = f"img/{product.key}_{var.key}_{h}h.png"
             stats = render.region_stats(ctx, data, circular=var.circular, categories=var.categories)
             size = render.render_panel(ctx, data, style, texts=texts, signed=signed, out=out / rel,
-                                       dpi=dpi, colors=colors, var=var, skip_labels=skip)
+                                       dpi=dpi, colors=colors, var=var, skip_labels=skip, overlay=ov)
             total_png += size
             rec["panels"][var.key][str(h)] = {"file": rel, "ref": iso(ref_t) if h else None, **stats,
                                               "stations": render.station_values(ctx, data, skip)}
@@ -182,7 +220,7 @@ def main(argv=None) -> int:
                               for v in PANEL_VARIABLES.values()],
                 "products": {}}
     for key in args.products.split(","):
-        manifest["products"][key] = build_product(PRODUCTS[key], client, now, out, cache, layers, args.dpi, args.colors)
+        manifest["products"][key] = build_product(PRODUCTS[key], client, now, out, cache, layers, args.dpi, args.colors, wpc=not args.demo)
 
     (out / "data.json").write_text(json.dumps(manifest, separators=(",", ":")))
     shutil.copy(SITE_DIR / "index.html", out / "index.html")

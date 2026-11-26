@@ -156,7 +156,8 @@ def _bold_regular(fig, x, y, bold, regular, size, right=False):
 
 def render_panel(ctx: MapContext, field: np.ndarray, style: Style, *, texts: tuple[str, str, str, str], signed: bool,
                  out: Path, dpi: int = 100, colors: int = 256, var: Variable | None = None,
-                 skip_labels: np.ndarray | None = None) -> int:
+                 skip_labels: np.ndarray | None = None, overlay=None) -> int:
+    """``overlay``: optional callable ``overlay(ax, extent)`` that draws extra features (fronts, H / L) above the isobars."""
     cmap, norm = style.cmap_norm()
     fig = plt.figure(figsize=(FIG_W, FIG_H), dpi=dpi, facecolor="white")
     ax = fig.add_axes([MARGIN / FIG_W, FOOTER_H / FIG_H, MAP_W / FIG_W, MAP_H / FIG_H], projection=PROJ)
@@ -204,6 +205,9 @@ def render_panel(ctx: MapContext, field: np.ndarray, style: Style, *, texts: tup
                     t.set_path_effects(halo(2.0))
             except Exception as exc:                 # no label fits / no contour at those levels: lines alone are fine
                 log.debug("isobar labels skipped: %s", exc)
+
+    if overlay is not None:
+        overlay(ax, EXTENT)
 
     # values at METAR stations (nearest analysis cell), bold with a white halo
     for st, (r, c), px, py in ctx.labels:

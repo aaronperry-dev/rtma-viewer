@@ -83,9 +83,9 @@ def _ceil_label(v: float) -> str:
 
 
 # --------------------------------------------------------------------------- variables
-G_TEMP, G_24H, G_HAZ, G_PCP, G_WIND, G_PRESS, G_SKY, G_KIN, G_TERRAIN = (
+G_TEMP, G_24H, G_HAZ, G_PCP, G_WIND, G_PRESS, G_FRONT, G_SKY, G_KIN, G_TERRAIN = (
     "Temperature & moisture", "Past 24 hours", "Winter hazard diagnostics", "Precipitation", "Wind", "Pressure",
-    "Sky & visibility", "Surface kinematics", "Terrain")
+    "Surface analysis", "Sky & visibility", "Surface kinematics", "Terrain")
 FROSTBITE_CATEGORIES = ("None", "30 min", "10 min", "5 min")
 BLIZZARD_LABELS = ("0 h", "1 h", "2 h", "3 h", "4 h", "5 h", "6 h")
 FLASH_FREEZE_CATEGORIES = ("None", "Fell below 32 °F", "Flash freeze")
@@ -130,6 +130,7 @@ class Variable:
                                        # build records how many hours of ``period_hours`` were really available
     period_hours: int = 0              # length of the accumulation period (precipitation totals), for the "N of M h available" note
     show_period: bool = True           # header says "(past N h)" for series products (off when the title already names the period)
+    overlay: str = ""                  # "wpc" or "objective": draw fronts, troughs and H / L symbols over the map (see fronts.py / objective.py)
 
 
 _PCP_NOTE = ("Liquid-equivalent precipitation analysed on the 2.5 km grid. RTMA uses the radar-only MRMS estimate (about 15 min after "
@@ -407,6 +408,31 @@ VARIABLES: dict[str, Variable] = {
                            "1 mb per 100 km corresponds to roughly a 17 mph geostrophic wind (surface winds are weaker because of "
                            "friction); 2 or more is a tight gradient and a windy setup. Left blank above 1,000 m, where the "
                            "sea-level reduction is not meaningful.", stat_decimals=2),
+    # ------------------------------------------------------------------ surface analysis (fronts, highs and lows)
+    "sfcwpc": Variable("sfcwpc", "Fronts (WPC)", "WPC Surface Analysis over MSLP", "mb", "", "", requires=("mslp",),
+                       derive=lambda m: m, group=G_FRONT, changes=False, isobar_step=2.0, label_max_terrain_m=1000.0,
+                       labeler=lambda v: "", overlay="wpc",
+                       note="The National Weather Service Weather Prediction Center's hand analysis of fronts, troughs and pressure "
+                            "centres (its coded surface bulletin, issued every 3 hours), drawn over RTMA / URMA sea-level pressure. "
+                            "The positions are WPC's, only joined smoothly. The bulletin gives each front as a line without a direction "
+                            "of motion, so the triangles and semicircles are put on the side the front is moving toward, found from "
+                            "the analysed equivalent potential temperature either side of the line. Troughs (dashed) also cover "
+                            "outflow boundaries, squall lines and dry lines. Positions are given to 0.1 degree and the analysis is "
+                            "valid only at the 3-hourly synoptic times, and WPC publishes it about 90 minutes late. The map uses the "
+                            "analysis nearest the map time, or failing that the latest one up to 3 hours earlier (the label says which). "
+                            "Only the newest bulletin is kept online, so the page saves each one when it first sees it and earlier times "
+                            "fill in only going forward."),
+    "sfcobj": Variable("sfcobj", "Fronts (objective)", "Objective Frontal Zones over MSLP (experimental)", "mb", "", "",
+                       requires=("mslp", "temp", "dewpoint", "pressure", "u10", "v10", "terrain"),
+                       derive=lambda m, *rest: m, group=G_FRONT, changes=False, isobar_step=2.0, label_max_terrain_m=1000.0,
+                       labeler=lambda v: "", overlay="objective",
+                       note="EXPERIMENTAL, machine-drawn from this analysis alone - not equivalent to WPC's analysis and no substitute "
+                            "for it. Fronts are placed where the smoothed surface equivalent potential temperature changes fastest "
+                            "(a thermal front parameter), kept where that change exceeds 10 K per 100 km over at least 300 km and "
+                            "away from high terrain and from coasts and the Great Lakes (where land-water contrast, not an air mass, drives it), and typed by the wind across the line: blowing toward the warm side is a cold "
+                            "front, toward the cold side a warm front, and nearly parallel is stationary. Occluded fronts, troughs "
+                            "and dry lines are not identified, strong coast or lake contrasts can show as fronts, and a front may "
+                            "break into pieces. H and L mark closed highs and lows of the smoothed sea-level pressure."),
     # ------------------------------------------------------------------ sky & visibility
     "vis": Variable("vis", "Visibility", "Surface Visibility", "mi", "VIS", "surface", _m_to_mi, group=G_SKY,
                     changes=False, decimals=1,
