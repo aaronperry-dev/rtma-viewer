@@ -1,6 +1,6 @@
 # New England RTMA / URMA viewer
 
-Hourly maps of **34 surface variables** from NOAA's **RTMA** and **URMA** (2.5 km), each as the current field plus
+Hourly maps of **41 variables** from NOAA's **RTMA** and **URMA** (2.5 km), each as the current field plus
 **1 / 3 / 6 / 12 / 24-hour change** where a change is meaningful, published as a static dashboard on GitHub Pages:
 
 * **Basics:** temperature, dew point, apparent temperature, wind speed / gust / **direction**, **surface pressure**,
@@ -12,6 +12,8 @@ Hourly maps of **34 surface variables** from NOAA's **RTMA** and **URMA** (2.5 k
   and **maximum gust**.
 * **Surface kinematics:** **temperature and dew point advection**, **convergence**, **vorticity**, **frontogenesis** and
   **terrain-forced (upslope) lift** from the 10 m wind.
+* **Precipitation (analysis, not forecast):** **1 / 3 / 6 / 12 / 24 / 48-hour liquid-equivalent precipitation** from NOAA's hourly
+  precipitation analyses, and a rough **24-hour frozen precipitation** (the part that fell while the surface wet bulb was at or below 32 F).
 
 Everything - fetching, decoding, plotting, site generation - is Python; the page itself is plain HTML + a little JS.
 
@@ -45,7 +47,7 @@ site/index.html  dashboard (product / variable / time-step controls, compare gri
 Nothing generated. The workflow builds into `public/` and deploys it with the Pages artifact
 actions, so **no PNGs, GRIBs or data files are ever committed** - the repo stays source-only and
 does not grow. The only persisted state is a small Actions cache (`.cache/fields`, compact float16 / packed arrays
-of the last ~28 h, ~65 MB per product, ~130 MB in all) and the Natural Earth shapefiles; the workflow keeps the newest two
+of the last ~52 h, ~125 MB per product, ~250 MB in all) and the Natural Earth shapefiles; the workflow keeps the newest two
 field caches and deletes the rest.
 
 ## Data used
@@ -54,18 +56,28 @@ field caches and deletes the rest.
   `get_object(Range="bytes=start-end")` downloads just that message instead of the whole file. The messages used are
   `TMP` `DPT` `WIND` `GUST` `WDIR` `UGRD` `VGRD` (2 m / 10 m), `PRES` and `HGT` (surface), `VIS`, `CEIL` and `TCDC`; the file's
   `SPFH` is not needed (WIND falls back to hypot(UGRD, VGRD) if absent). `UGRD` / `VGRD` feed only the kinematic maps.
+* **Precipitation** comes from separate small files (one GRIB2 message each, ~0.7 MB, fetched whole - there is nothing to range-request):
+  RTMA `rtma2p5.YYYYMMDDHH.pcp.184.grb2` (radar-only MRMS QPE, published ~15 min after the hour) and URMA
+  `urma2p5.YYYYMMDDHH.pcp_01h.wexp.grb2` (Stage IV, radar + gauges with River Forecast Centre quality control, re-made for many hours after
+  first publication). The file for the hour ending at the cycle time is the cycle's 1-hour accumulation (kg/m2 = mm, shown in inches).
+  NOAA crops these files differently from the analysis files (RTMA: 2145 x 1377 against 2345 x 1597) but on the same 2.5 km lattice, so the
+  New England window has its own indices; it is found from the coordinates once, checked against the analysis window (< 0.0005 degrees)
+  and refused if it does not match. Cached hours younger than `Product.pcp_refresh_hours` (3 h RTMA, 24 h URMA) are re-downloaded every run
+  to pick up the re-makes; if a re-download finds nothing the cached copy is kept.
 * Variables are only loaded for the hours their maps need (`hours_needed()` in `config.py`, which walks the derivation graph):
-  dew point and pressure for 6 cycles (the change maps), **temperature, wind and gust for all 25 hourly cycles** of the past day
-  (the 24-hour summaries), and wind direction, visibility, ceiling, cloud cover and the wind components only for the newest cycle;
+  **temperature, dew point, pressure, wind and gust for all 25 hourly cycles** of the past day (the 24-hour summaries and the wet
+  bulb behind frozen precipitation), **hourly precipitation for 48 hours** (the 48-hour total), and wind direction, visibility, ceiling, cloud cover and the wind components only for the newest cycle;
   terrain (static) once per product.
-* A normal run downloads the newest cycle only: about **70 MB per product** (~140 MB per hourly run, up from ~116 MB), because
-  every earlier hour was once the newest and is already in the cache. A cold start (or cache eviction) fetches 25 cycles of
-  temperature, wind and gust: **~560 MB per product** (measured; about a minute per product on a fast link). The build log prints
-  real bytes and request counts for each product. If a few hourly analyses are missing the 24-hour summaries still draw (at least
-  19 of 25 are needed; hours below freezing is rescaled to the full period).
+* A normal run downloads the newest cycle only: about **70 MB per product** plus the precipitation refresh (3 files, ~2 MB for RTMA;
+  24 files, ~19 MB for URMA), ~165 MB per hourly run in all, because every earlier hour was once the newest and is already in the cache.
+  A cold start (or cache eviction) fetches 25 cycles of five variables and 48 precipitation files: **~840 MB per product**
+  (measured: 88 s for URMA on a fast link). The build log prints
+  real bytes and request counts for each product. If a few hourly analyses are missing the 24-hour temperature summaries still draw (at
+  least 19 of 25 are needed; hours below freezing is rescaled to the full period). **Precipitation totals are stricter**: a total with any
+  hour missing would read low without saying so, so it is left blank instead (`Variable.min_series_fraction = 1.0`).
 * Cache precision: temperature-like fields are float16 (<= 0.06 units), but float16 would quantise ~1000 mb pressure to 0.5-1 mb,
   so pressure is cached as packed uint16 at 0.01 mb (same 2 bytes per cell), and the wind components (which are differentiated) at
-  0.002 m/s. Variables that only need the newest cycle are pruned to one file. The field cache is about 65 MB per product.
+  0.002 m/s. Variables that only need the newest cycle are pruned to one file. Hourly precipitation is packed as uint16 at 0.0005 in (an hour of more than 32 in would saturate; none ever has). The field cache is about 125 MB per product.
 * RTMA is published ~35-45 min after the hour; URMA a few hours later. The build looks back up to
   6 h (RTMA) / 12 h (URMA) for the newest published cycle, so the page always shows the latest
   available analysis and states its valid time and lag.
@@ -119,6 +131,11 @@ as KMWN reads the analysis at the grid's terrain height, not at 1917 m.)
   peach -> orange -> red -> maroon -> magenta for warming - with the original whole-number levels (1, 3, 5, 8, 12,
   16, 20, 25, 30, 35, 40, 50) and an equal-width legend. The levels are the same for 1/3/6/12/24 h. Pressure and MSLP use the same
   25 colours on finer levels (+-0.5, 1, 2, 3, 4, 6, 9, 12, 16, 20, 24, 30 mb) because pressure changes are an order of magnitude smaller.
+* **Reference lines**: every absolute temperature-type map (temperature, dew point, wet bulb, apparent temperature, sea-level
+  temperature, 24 h max / min temperature, 24 h min wind chill) carries a **red 32 F line** and a **blue 0 F line** (white halo so
+  they show over the dark ramp colours). They are contours of the field smoothed by one cell, drawn only where the field really
+  crosses the value, and never on change maps. The colours / values are `TEMP_LINES` in `rtma_viewer/config.py`; the page lists
+  the lines under the map description.
 * Edit `rtma_viewer/colors.py` to change anchors, ranges or bin widths.
 
 ## Variables
@@ -152,10 +169,25 @@ as KMWN reads the analysis at the grid's terrain height, not at 1917 m.)
 | **Convergence, vorticity** | derived: `UGRD` `VGRD` | no | 1e-5 s-1; convergence positive = air piling up, vorticity positive = cyclonic |
 | **Frontogenesis** | derived: sea-level T, `UGRD` `VGRD` | no | Petterssen 2-D kinematic, F per 100 km per 3 h |
 | **Upslope lift** | derived: `UGRD` `VGRD`, terrain | no | V . grad(z), cm/s; positive = blowing uphill |
+| **1 h precipitation** | `pcp` file (RTMA: MRMS radar-only; URMA: Stage IV) | no | inches of water in the hour ending at the valid time; station labels only where >= 0.01 in |
+| **3 / 6 / 12 / 24 / 48 h precipitation** | derived: sums of the hourly files | no | blank where any of the hours is missing; one shared colour ramp (0.01 ... 10 in) for every period |
+| **24 h frozen precipitation** | derived: hourly precipitation, T, Td, surface pressure | no | liquid equivalent that fell while the mean of the start- and end-of-hour wet bulb was <= 32 F; a rough guide (see below) |
 | **Terrain height** | `HGT` (static) | no | the analysis grid's smoothed terrain, in feet |
 
 Current-only variables (no change maps) have 1 / 3 / 6 / 12 / 24-hour buttons greyed out; switching to one from a change map falls back
 to the current field. Every variable has a short "how to read this" note on the page (from `Variable.note` in `config.py`).
+
+### Precipitation
+
+* These are **analyses of what fell** (QPE), not forecasts. Totals are liquid equivalent; there is no snow-depth field in these files.
+* **RTMA** precipitation is the radar-only MRMS estimate: quick, but with no gauge correction, and radar estimates are weakest in snow, in
+  the mountains (beam blockage) and at long range. **URMA** uses Stage IV, which blends radar with gauges and is quality-controlled by the
+  River Forecast Centres; prefer it for winter totals once it has caught up. The recent hours of the URMA files are re-made as data arrive.
+* Checked on a real storm (22-23 Nov 2026, URMA): the sum of six hourly files agrees with NOAA's own 6-hour URMA file with a correlation of
+  0.998 and a mean difference of -0.002 in (the two are separate mosaics, so exact agreement is not expected).
+* **Frozen precipitation** counts each hour's liquid equivalent when the wet bulb averaged over that hour (start and end) was at or below
+  32 F. It says nothing about the air aloft (freezing rain, or rain falling through a cold surface layer, counts), melting, or snow-to-liquid
+  ratios (10:1 is the textbook average; colder, drier snow is fluffier). Treat it as a guide to where the water fell cold.
 
 ### Mean sea-level pressure (derived)
 
