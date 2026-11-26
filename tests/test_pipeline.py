@@ -117,8 +117,9 @@ def test_fetch_plan_only_asks_for_what_the_panels_need():
     need = hours_needed()
     assert set(need) == set(SOURCE_VARIABLES)
     assert need["terrain"] == (0,)                                     # static: newest cycle only
-    for k in ("vis", "ceiling", "cloud", "wdir_raw", "u10", "v10"):
+    for k in ("ceiling", "cloud", "wdir_raw", "u10", "v10"):
         assert need[k] == (0,), k                                       # current-field-only variables
+    assert need["vis"] == tuple(range(6))                               # ... except visibility: blizzard criteria look back 5 hours
     for k in ("dewpoint", "pressure"):
         assert need[k] == tuple(range(49)), k                           # change maps, and two days of wet bulbs for frozen precipitation
     assert need["temp"] == tuple(range(49))                             # wet bulbs for 48 h of frozen precipitation

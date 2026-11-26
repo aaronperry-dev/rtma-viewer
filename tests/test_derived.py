@@ -333,3 +333,138 @@ def test_frozen_precipitation_skips_missing_data():
     assert np.isnan(out3).all()
     # liquid equivalent: no snow-to-liquid ratio is applied
     assert np.allclose(frozen_precipitation(np.full((n + 1, 1, 2), 0.1, np.float32), t, td, p), 0.3)
+
+
+# ---------------------------------------------------------------------------------------- winter hazard diagnostics
+def _full(n, value, shape=(1, 2)):
+    return np.full((n,) + shape, value, np.float32)
+
+
+def test_blizzard_hours_is_the_longest_consecutive_run():
+    vis, wind, gust = _full(6, 0.2), _full(6, 20.0), _full(6, 30.0)
+    gust[:, 0, 0] = [40, 40, 40, 10, 40, 40]                         # a run of 3, a break, then 2
+    gust[:, 0, 1] = [40, 10, 40, 10, 40, 10]                         # only isolated hours
+    out = d.blizzard_hours(vis, wind, gust)
+    assert out[0, 0] == 3 and out[0, 1] == 1
+    vis2 = vis.copy(); vis2[:, 0, 0] = 0.3                           # visibility over 1/4 mi: not a blizzard
+    assert d.blizzard_hours(vis2, wind, gust)[0, 0] == 0
+    assert d.blizzard_hours(vis, np.full_like(wind, 36.0), np.full_like(gust, 36.0))[0, 0] == 6      # sustained wind counts
+    nan = d.blizzard_hours(np.full_like(vis, np.nan), wind, gust)
+    assert np.isnan(nan).all()                                        # no visibility at all: unknown, not "no blizzard"
+    # the run can sit in the past: only the oldest 3 hours qualify
+    g = _full(6, 10.0); g[3:, 0, 0] = 40
+    assert d.blizzard_hours(_full(6, 0.2), _full(6, 5.0), g)[0, 0] == 3
+
+
+def test_box_sum_matches_brute_force():
+    rng = np.random.default_rng(1)
+    a = rng.random((9, 11))
+    got = d._box_sum(a, 2)
+    for (i, j) in [(0, 0), (4, 5), (8, 10), (0, 7)]:
+        assert np.isclose(got[i, j], a[max(0, i - 2):i + 3, max(0, j - 2):j + 3].sum())
+
+
+def test_cold_pool_is_negative_in_the_cold_pocket_and_ignores_water():
+    slt = np.full((30, 30), 40.0)
+    slt[14:17, 14:17] = 30.0                                          # a cold pocket
+    terrain = np.full((30, 30), 500.0)
+    terrain[:, :4] = 0.0                                              # ocean on the west edge
+    slt[:, :4] = 60.0                                                 # warm water must not warm the land mean
+    out = d.cold_pool(slt, terrain, radius=5)
+    assert out[15, 15] < -8 and abs(out[5, 20]) < 1.0
+    assert np.isnan(out[:, :4]).all()
+    flat = d.cold_pool(np.full((20, 20), 35.0), np.full((20, 20), 300.0), radius=4)
+    assert np.allclose(flat, 0.0)
+
+
+def test_flash_freeze_classes():
+    n = 3
+    t = np.stack([np.array([[25.0, 30.0, 25.0, 40.0]])] + [np.array([[28.0, 31.0, 36.0, 41.0]])] * (n - 1)
+                 + [np.array([[40.0, 39.0, 26.0, 45.0]])]).astype(np.float32)          # now ... 3 h ago
+    pcp = np.zeros((n + 1, 1, 4), np.float32); pcp[1] = 0.05
+    out = d.flash_freeze(pcp, t)
+    assert list(out[0]) == [2.0, 1.0, 0.0, 0.0]                                          # >=10 F fall / smaller fall / was already cold / never froze
+    dry = d.flash_freeze(np.zeros_like(pcp), t)
+    assert (dry[0, :3] == 0).all()                                                       # no liquid: not a wet surface
+    nanpcp = d.flash_freeze(np.full_like(pcp, np.nan), t)
+    assert (nanpcp[0, :3] == 0).all()                                                    # unknown precipitation is not an error, just not flagged
+
+
+def test_freezing_fog_classes():
+    t = np.array([[30.0, 30.0, 30.0, 36.0, 30.0]]); td = np.array([[29.0, 29.0, 20.0, 35.0, 29.0]])
+    vis = np.array([[2.0, 0.3, 2.0, 0.3, 8.0]]); ceil = np.array([[5000.0, 5000.0, 5000.0, 400.0, 5000.0]])
+    out = d.freezing_fog(t, td, vis, ceil)
+    assert list(out[0]) == [1.0, 2.0, 0.0, 0.0, 0.0]                                     # fog / dense / too dry / too warm / clear
+    low_ceiling = d.freezing_fog(t[:, :1], td[:, :1], np.array([[9.0]]), np.array([[600.0]]))
+    assert low_ceiling[0, 0] == 1.0
+
+
+def test_wet_snow_load_classes():
+    n = 3
+    p = _full(n + 1, 1000.0)
+    t, td = _full(n + 1, 32.2), _full(n + 1, 30.5)                                          # wet bulb just under 32 F, air above 31 F
+    pcp = _full(n + 1, 0.05)
+    gust = _full(n + 1, 20.0)
+    assert d.wet_snow_load(pcp, t, td, p, gust)[0, 0] == 1                                # 0.15 in
+    assert d.wet_snow_load(_full(n + 1, 0.10), t, td, p, gust)[0, 0] == 2                 # 0.30 in
+    assert d.wet_snow_load(_full(n + 1, 0.10), t, td, p, _full(n + 1, 40.0))[0, 0] == 3   # ... with gusts
+    assert d.wet_snow_load(_full(n + 1, 0.01), t, td, p, gust)[0, 0] == 0
+    cold = d.wet_snow_load(pcp, _full(n + 1, 25.0), _full(n + 1, 24.0), p, gust)           # powder: air under 31 F is not "wet snow"
+    assert cold[0, 0] == 0
+    warm = d.wet_snow_load(pcp, _full(n + 1, 45.0), _full(n + 1, 44.0), p, gust)           # rain
+    assert warm[0, 0] == 0
+    assert np.isnan(d.wet_snow_load(np.full((n + 1, 1, 2), np.nan, np.float32), t, td, p, gust)).all()
+
+
+def test_snowmaking_hours_uses_the_wet_bulb():
+    n = 4
+    p = _full(n + 1, 1000.0)
+    dry = d.snowmaking_hours(_full(n + 1, 30.0), _full(n + 1, 10.0), p)                   # dry: wet bulb well under 28
+    assert np.allclose(dry, n)
+    humid = d.snowmaking_hours(_full(n + 1, 30.0), _full(n + 1, 30.0), p)                 # saturated: wet bulb = 30
+    assert np.allclose(humid, 0)
+
+
+def test_radiational_cooling_classes():
+    cloud = np.array([[5.0, 20.0, 60.0, 60.0, 20.0]]); wind = np.array([[1.0, 4.0, 3.0, 12.0, 12.0]])
+    assert list(d.radiational_cooling(cloud, wind)[0]) == [3.0, 2.0, 1.0, 0.0, 1.0]
+
+
+def test_threshold_hours_and_degree_hours():
+    t = np.array([-5.0, -5.0, -5.0, -5.0, -5.0], np.float32).reshape(5, 1, 1)
+    w = np.full((5, 1, 1), 20.0, np.float32)                                                # wind chill ~ -27 F
+    assert d.wind_chill_hours(t, w, -25.0)[0, 0] == 4 and d.wind_chill_hours(t, w, -40.0)[0, 0] == 0
+    g = np.array([30, 45, 45, 30, 30], np.float32).reshape(5, 1, 1)
+    assert 1.0 < d.hours_at_or_above(g, 40.0)[0, 0] < 3.0
+    s = np.array([32, 42, 42, 32, 32], np.float32).reshape(5, 1, 1)
+    assert np.isclose(d.degree_hours(s)[0, 0], 5 + 10 + 5)                                   # trapezoids of 10 F above freezing
+    assert np.isclose(d.degree_hours(s, above=False)[0, 0], 0)
+    cold = np.array([22, 22, 22], np.float32).reshape(3, 1, 1)
+    assert np.isclose(d.degree_hours(cold, above=False)[0, 0], 20)
+    miss = s.copy(); miss[2] = np.nan
+    assert np.isfinite(d.degree_hours(miss)[0, 0]) and np.isnan(d.degree_hours(np.full_like(s, np.nan))[0, 0])
+
+
+def test_precip_on_cold_surface():
+    n = 3
+    pcp = _full(n + 1, 0.1)
+    t = np.stack([np.array([[20.0, 40.0]])] * (n + 1)).astype(np.float32)
+    out = d.precip_on_cold_surface(pcp, t)
+    assert np.allclose(out[0], [0.3, 0.0])
+    t[1] = np.nan
+    assert np.allclose(d.precip_on_cold_surface(pcp, t)[0, 0], 0.3)                          # a missing instant: the other end decides
+    assert np.isnan(d.precip_on_cold_surface(np.full_like(pcp, np.nan), t)).all()
+
+
+def test_new_hazard_variables_are_wired_up():
+    from rtma_viewer.colors import style_for
+    keys = ("blizz", "flashfrz", "frzfog", "wetsnow", "radcool", "coldpool", "snowmk28", "wchrs15", "wchrs25", "gst40hrs", "gst58hrs",
+            "pdh24", "pdh48", "fdh48", "pcpcold24")
+    for k in keys:
+        v = VARIABLES[k]
+        assert v.derive is not None and not v.hidden and v.note and not v.changes, k
+        st = style_for(k, 0)
+        if v.categories:
+            assert len(st.tick_labels) == len(v.categories), k
+    assert VARIABLES["blizz"].series == 5 and VARIABLES["fdh48"].series == 48
+    assert VARIABLES["flashfrz"].partial_series and VARIABLES["wetsnow"].partial_series and VARIABLES["pcpcold24"].partial_series
