@@ -288,35 +288,48 @@ def test_winter_variables_are_registered():
 
 
 # --------------------------------------------------------------------------- precipitation sums
-def test_series_sum_adds_hours_and_propagates_missing():
+def test_series_sum_uses_whatever_hours_exist():
     from rtma_viewer.derived import series_sum
-    st = np.array([[[0.1, np.nan]], [[0.2, 0.5]], [[0.3, 0.5]]], np.float32)
+    st = np.array([[[0.1, np.nan, np.nan]], [[0.2, 0.5, np.nan]], [[np.nan, 0.5, np.nan]]], np.float32)
     out = series_sum(st)
-    assert np.isclose(out[0, 0], 0.6) and np.isnan(out[0, 1])          # a missing hour makes the total missing, not low
+    assert np.isclose(out[0, 0], 0.3) and np.isclose(out[0, 1], 1.0)       # missing hours are skipped, the rest add up
+    assert np.isnan(out[0, 2])                                              # no data in any hour: still missing, not 0
+    assert np.nansum(np.full((3, 1, 1), np.nan)) == 0 and np.isnan(series_sum(np.full((3, 1, 1), np.nan, np.float32))[0, 0])
+
+
+def _stack(n, value):
+    return np.full((n + 1, 1, 3), value, np.float64)
 
 
 def test_frozen_precipitation_counts_only_hours_with_a_freezing_wet_bulb():
     from rtma_viewer.derived import frozen_precipitation, wet_bulb
     n = 4
     pcp = np.full((n + 1, 1, 3), 0.10, np.float32)                       # 0.10 in in every hour (the last plane is unused)
-    t = np.full((n + 1, 1, 3), 40.0)
-    td = np.full((n + 1, 1, 3), 38.0)
-    p = np.full((n + 1, 1, 3), 1000.0)
+    t, td, p = _stack(n, 40.0), _stack(n, 38.0), _stack(n, 1000.0)
     t[:, 0, 0], td[:, 0, 0] = 25.0, 23.0                                  # column 0: cold all day  -> wet bulb well below 32
     t[:, 0, 1], td[:, 0, 1] = 35.0, 34.0                                  # column 1: wet bulb above 32 all day -> rain
-    t[2:, 0, 2], td[2:, 0, 2] = 26.0, 24.0                                # column 2: cold at instants 2..4, mild at 0 and 1
+    t[2:, 0, 2], td[2:, 0, 2] = 26.0, 24.0                                # column 2: mild at instants 0 and 1, cold at 2..4
     assert wet_bulb(t[:, 0, 0], td[:, 0, 0], p[:, 0, 0]).max() < 32 < wet_bulb(t[:, 0, 1], td[:, 0, 1], p[:, 0, 1]).min()
     out = frozen_precipitation(pcp, t, td, p)
     assert np.isclose(out[0, 0], 0.40) and np.isclose(out[0, 1], 0.0)
-    # column 2: hours 0 (instants 0, 1) mild -> rain; hour 1 (instants 1, 2) straddles: the mean of a mild and a cold wet bulb;
-    # hours 2 and 3 (instants 2-4) cold -> snow: 0.20 in for sure, at most 0.30
-    assert 0.20 - 1e-6 <= out[0, 2] <= 0.30 + 1e-6
+    assert 0.20 - 1e-6 <= out[0, 2] <= 0.30 + 1e-6                        # hours 2, 3 cold; hour 1 straddles; hour 0 rain
 
 
-def test_frozen_precipitation_is_missing_where_an_input_is_missing():
+def test_frozen_precipitation_skips_missing_data():
     from rtma_viewer.derived import frozen_precipitation
-    pcp = np.full((3, 1, 2), 0.1, np.float32)
-    t, td, p = np.full((3, 1, 2), 25.0), np.full((3, 1, 2), 23.0), np.full((3, 1, 2), 1000.0)
-    pcp[1, 0, 1] = np.nan
+    n = 3
+    pcp = np.full((n + 1, 1, 2), 0.1, np.float32)
+    t, td, p = _stack(n, 25.0)[:, :, :2], _stack(n, 23.0)[:, :, :2], _stack(n, 1000.0)[:, :, :2]
+    pcp[1, 0, 1] = np.nan                                                 # column 1 has no precipitation analysis for hour 1
     out = frozen_precipitation(pcp, t, td, p)
-    assert np.isclose(out[0, 0], 0.2) and np.isnan(out[0, 1])
+    assert np.isclose(out[0, 0], 0.3) and np.isclose(out[0, 1], 0.2)      # the hour is skipped, the others still count
+    # a missing wet-bulb instant: the hours on either side fall back to their other end
+    t2, td2, p2 = t.copy(), td.copy(), p.copy()
+    t2[1], td2[1], p2[1] = np.nan, np.nan, np.nan
+    out2 = frozen_precipitation(np.full((n + 1, 1, 2), 0.1, np.float32), t2, td2, p2)
+    assert np.allclose(out2, 0.3)                                         # all three hours still classified (cold at the other end)
+    # nothing usable at all in a cell: missing, not zero
+    out3 = frozen_precipitation(np.full((n + 1, 1, 2), np.nan, np.float32), t, td, p)
+    assert np.isnan(out3).all()
+    # liquid equivalent: no snow-to-liquid ratio is applied
+    assert np.allclose(frozen_precipitation(np.full((n + 1, 1, 2), 0.1, np.float32), t, td, p), 0.3)

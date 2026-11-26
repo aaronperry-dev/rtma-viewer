@@ -230,15 +230,23 @@ def test_integer_count_and_hours_styles():
         assert np.array_equal(c.style_for(k, 0).levels, c.style_for("temp", 0).levels)          # same legend: directly comparable
 
 
-def test_precipitation_ramp_is_shared_by_every_period():
+def test_precipitation_uses_the_nws_total_precipitation_legend():
     ref = c.style_for("pcp1", 0)
-    assert list(ref.levels) == [0, 0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0]
-    assert ref.extend == "max" and len(ref.colors) == len(ref.levels)          # 14 bins + over
-    for key in ("pcp3", "pcp6", "pcp12", "pcp24", "pcp48", "fpcp24"):
+    assert list(ref.levels) == [0, 0.01, 0.10, 0.25, 0.50, 1.00, 1.50, 2.00, 3.00, 4.00, 6.00, 8.00, 10.0, 15.0, 20.0, 30.0, 50.0]
+    assert ref.extend == "max" and len(ref.colors) == len(ref.levels)          # 16 bins + over
+    h = hexes(ref)
+    assert h[0] == "#ffffff" and h[1] == "#c7e9c0" and h[4] == "#31a353" and h[5] == "#006d2c"     # 0.00, 0.01-0.09, 0.50-0.99, 1.00-1.49
+    assert h[6] == "#ffff8a" and h[9] == "#fc4e2a" and h[12] == "#700026" and h[15] == "#ffdbff" and h[16] == h[15]
+    for key in ("pcp3", "pcp6", "pcp12", "pcp24", "pcp48"):
         s = c.style_for(key, 0)
         assert np.array_equal(s.levels, ref.levels) and np.allclose(s.colors, ref.colors), key      # same colour = same amount
-    h = hexes(ref)
-    assert h[0] == "#f4f6f6" and h[-1] == "#5c0f1c"                              # nothing is near-white, 10+ in is maroon
-    assert np.ptp(ref.colors[0]) < 0.02 and np.ptp(ref.colors[-1]) > 0.05
-    cmap, _ = ref.cmap_norm()
+    cmap, norm = ref.cmap_norm()
     assert cmap.N == len(ref.levels) - 1
+    assert norm(0.004) == norm(0.0) != norm(0.01) and norm(0.09) == norm(0.01) != norm(0.10)        # 0.00 | 0.01-0.09 | 0.10-0.24
+
+
+def test_frozen_precipitation_is_liquid_equivalent_on_the_precip_legend():
+    ref = c.style_for("pcp24", 0)
+    for key in ("fpcp1", "fpcp3", "fpcp6", "fpcp12", "fpcp24", "fpcp48"):
+        s_ = c.style_for(key, 0)
+        assert np.array_equal(s_.levels, ref.levels) and np.allclose(s_.colors, ref.colors), key

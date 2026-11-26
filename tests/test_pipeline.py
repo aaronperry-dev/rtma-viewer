@@ -120,8 +120,9 @@ def test_fetch_plan_only_asks_for_what_the_panels_need():
     for k in ("vis", "ceiling", "cloud", "wdir_raw", "u10", "v10"):
         assert need[k] == (0,), k                                       # current-field-only variables
     for k in ("dewpoint", "pressure"):
-        assert need[k] == tuple(range(25)), k                           # change maps, and a day of wet bulbs for frozen precipitation
-    for k in ("temp", "wind", "gust"):
+        assert need[k] == tuple(range(49)), k                           # change maps, and two days of wet bulbs for frozen precipitation
+    assert need["temp"] == tuple(range(49))                             # wet bulbs for 48 h of frozen precipitation
+    for k in ("wind", "gust"):
         assert need[k] == tuple(range(25)), k                           # ... and the 24-hour summaries use every hourly analysis
     # every derived variable's inputs exist for every hour it is drawn at (series variables: and the hours before it)
     for v in VARIABLES.values():
@@ -270,22 +271,58 @@ def test_refresh_falls_back_to_the_cache_when_the_file_vanishes(tmp_path):
 
 def test_precip_hours_needed_and_sums():
     need = hours_needed()
-    assert need["pcp1"] == tuple(range(48))                       # 48 hourly files cover every period up to 48 h
+    assert need["pcp1"] == tuple(range(49))                       # 49 hourly files: 48 for the 48 h total, one more for its wet bulbs
     for k in ("temp", "dewpoint", "pressure"):
-        assert need[k][-1] >= 24                                   # the frozen-precipitation product needs a day of wet bulbs
+        assert need[k] == tuple(range(49)), k                      # 48 hours of wet bulbs (49 instants) for 48 h frozen precipitation
     for n in (3, 6, 12, 24, 48):
         v = VARIABLES[f"pcp{n}"]
-        assert v.series == n - 1 and v.requires == ("pcp1",) and panel_hours(v) == (0,) and v.min_series_fraction == 1.0
+        assert v.series == n - 1 and v.period_hours == n and v.requires == ("pcp1",) and v.partial_series and panel_hours(v) == (0,)
+    for n in (1, 3, 6, 12, 24, 48):
+        v = VARIABLES[f"fpcp{n}"]
+        assert v.series == n and v.period_hours == n and v.partial_series and v.requires == ("pcp1", "temp", "dewpoint", "pressure")
 
 
-def test_series_inputs_are_strict_for_precipitation():
-    from rtma_viewer.build import series_inputs
+def _fields(keys, hours, shape=(4, 5)):
+    return {(HOUR - timedelta(hours=i), k): np.ones(shape, np.float32) for k in keys for i in hours}
+
+
+def test_series_inputs_use_whatever_precipitation_exists():
+    from rtma_viewer.build import available_hours, series_inputs
     v = VARIABLES["pcp6"]
+    fields = _fields(["pcp1"], range(6))
+    assert available_hours(fields, v, HOUR) == 6 and series_inputs(fields, v, HOUR)[0].shape == (6, 4, 5)
+    del fields[(HOUR - timedelta(hours=3), "pcp1")]                   # one hour never published
+    got = series_inputs(fields, v, HOUR)[0]
+    assert available_hours(fields, v, HOUR) == 5 and np.isnan(got[3]).all() and np.isfinite(got[[0, 1, 2, 4, 5]]).all()
+    del fields[(HOUR, "pcp1")]                                        # even the newest hour missing: still computed from the rest
+    assert available_hours(fields, v, HOUR) == 4 and series_inputs(fields, v, HOUR) is not None
+    only_one = _fields(["pcp1"], [5])
+    assert available_hours(only_one, v, HOUR) == 1 and series_inputs(only_one, v, HOUR) is not None
+    assert series_inputs({}, v, HOUR) is None and available_hours({}, v, HOUR) == 0
+
+
+def test_frozen_inputs_are_blanked_per_input_and_counted():
+    from rtma_viewer.build import available_hours, series_inputs
+    v = VARIABLES["fpcp6"]
+    fields = _fields(["pcp1", "temp", "dewpoint", "pressure"], range(7))
+    assert available_hours(fields, v, HOUR) == 6
+    for k in ("temp", "dewpoint", "pressure"):                        # one instant (2 h ago) has no analysis at all
+        del fields[(HOUR - timedelta(hours=2), k)]
+    assert available_hours(fields, v, HOUR) == 6                      # each hour still has a wet bulb at one end
+    del fields[(HOUR - timedelta(hours=3), "pressure")]               # ... until the neighbouring instant also loses an input
+    assert available_hours(fields, v, HOUR) == 5                      # hour 2 (instants 2 and 3) can no longer be classified
+    del fields[(HOUR - timedelta(hours=4), "pcp1")]                   # and an hour without a precipitation analysis adds nothing
+    assert available_hours(fields, v, HOUR) == 4
+    pcp, t, td, p = series_inputs(fields, v, HOUR)
+    assert pcp.shape == t.shape == (7, 4, 5) and np.isnan(pcp[4]).all() and np.isfinite(pcp[3]).all()     # blanked per input
+    assert np.isnan(t[2]).all() and np.isfinite(t[3]).all() and np.isnan(p[3]).all()
+
+
+def test_temperature_summaries_keep_their_75_percent_rule():
+    from rtma_viewer.build import series_inputs
+    t = VARIABLES["tmax24"]
     base = np.ones((4, 5), np.float32)
-    fields = {(HOUR - timedelta(hours=i), "pcp1"): base for i in range(6)}
-    assert series_inputs(fields, v, HOUR)[0].shape == (6, 4, 5)
-    fields[(HOUR - timedelta(hours=3), "pcp1")] = None            # one hour missing: a 6 h total would silently read low
-    assert series_inputs(fields, v, HOUR) is None
-    t = VARIABLES["tmax24"]                                        # temperature summaries keep their 75 % tolerance
     tf = {(HOUR - timedelta(hours=i), "temp"): base for i in range(25) if i != 7}
     assert series_inputs(tf, t, HOUR) is not None
+    tf = {(HOUR - timedelta(hours=i), "temp"): base for i in range(25) if i > 7 and i != 20}      # only 17 of 25
+    assert series_inputs(tf, t, HOUR) is None
