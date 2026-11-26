@@ -285,3 +285,38 @@ def test_winter_variables_are_registered():
         v = VARIABLES[key]
         assert v.requires == req and v.series == series and not v.changes and key not in SOURCE_VARIABLES, key
     assert VARIABLES["fltcat"].categories == d.FLIGHT_CATEGORIES and len(VARIABLES["frostbite"].categories) == 4
+
+
+# --------------------------------------------------------------------------- precipitation sums
+def test_series_sum_adds_hours_and_propagates_missing():
+    from rtma_viewer.derived import series_sum
+    st = np.array([[[0.1, np.nan]], [[0.2, 0.5]], [[0.3, 0.5]]], np.float32)
+    out = series_sum(st)
+    assert np.isclose(out[0, 0], 0.6) and np.isnan(out[0, 1])          # a missing hour makes the total missing, not low
+
+
+def test_frozen_precipitation_counts_only_hours_with_a_freezing_wet_bulb():
+    from rtma_viewer.derived import frozen_precipitation, wet_bulb
+    n = 4
+    pcp = np.full((n + 1, 1, 3), 0.10, np.float32)                       # 0.10 in in every hour (the last plane is unused)
+    t = np.full((n + 1, 1, 3), 40.0)
+    td = np.full((n + 1, 1, 3), 38.0)
+    p = np.full((n + 1, 1, 3), 1000.0)
+    t[:, 0, 0], td[:, 0, 0] = 25.0, 23.0                                  # column 0: cold all day  -> wet bulb well below 32
+    t[:, 0, 1], td[:, 0, 1] = 35.0, 34.0                                  # column 1: wet bulb above 32 all day -> rain
+    t[2:, 0, 2], td[2:, 0, 2] = 26.0, 24.0                                # column 2: cold at instants 2..4, mild at 0 and 1
+    assert wet_bulb(t[:, 0, 0], td[:, 0, 0], p[:, 0, 0]).max() < 32 < wet_bulb(t[:, 0, 1], td[:, 0, 1], p[:, 0, 1]).min()
+    out = frozen_precipitation(pcp, t, td, p)
+    assert np.isclose(out[0, 0], 0.40) and np.isclose(out[0, 1], 0.0)
+    # column 2: hours 0 (instants 0, 1) mild -> rain; hour 1 (instants 1, 2) straddles: the mean of a mild and a cold wet bulb;
+    # hours 2 and 3 (instants 2-4) cold -> snow: 0.20 in for sure, at most 0.30
+    assert 0.20 - 1e-6 <= out[0, 2] <= 0.30 + 1e-6
+
+
+def test_frozen_precipitation_is_missing_where_an_input_is_missing():
+    from rtma_viewer.derived import frozen_precipitation
+    pcp = np.full((3, 1, 2), 0.1, np.float32)
+    t, td, p = np.full((3, 1, 2), 25.0), np.full((3, 1, 2), 23.0), np.full((3, 1, 2), 1000.0)
+    pcp[1, 0, 1] = np.nan
+    out = frozen_precipitation(pcp, t, td, p)
+    assert np.isclose(out[0, 0], 0.2) and np.isnan(out[0, 1])

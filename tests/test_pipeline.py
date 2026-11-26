@@ -32,15 +32,18 @@ def test_byte_range_fetch_values_and_cache(s3, tmp_path):
     st = FieldStore(PRODUCTS["rtma"], s3, tmp_path)
     jobs = [(HOUR, v) for v in SOURCE_VARIABLES.values()]
     n = len(SOURCE_VARIABLES)
+    n_idx = sum(v.source == "idx" for v in SOURCE_VARIABLES.values())
     s3.range_requests.clear()
-    out = st.load(jobs)
+    out = st.load([j for j in jobs if j[1].source == "idx"])
 
-    # one ranged GET per variable - never the whole file (the specific-humidity message is the only one we do not use)
-    assert len(s3.range_requests) == n
+    # one ranged GET per analysis variable - never the whole file (the specific-humidity message is the only one we do not use);
+    # the hourly precipitation file is its own small object, fetched whole
+    assert len(s3.range_requests) == n_idx
     # (the last message in an idx has no known end, so it is an open-ended "bytes=N-" request)
     assert all(re.fullmatch(r"bytes=\d+-\d*", r) for _, r in s3.range_requests)
     blob, _ = s3._file("rtma2p5", HOUR)
     assert st.src.bytes_downloaded < 0.95 * len(blob)
+    out.update(st.load([j for j in jobs if j[1].source == "pcp"]))            # the precipitation file comes on top
 
     # decoded values match the truth to within GRIB packing precision
     truth = s3.grid.fields_si(HOUR)
@@ -56,8 +59,10 @@ def test_byte_range_fetch_values_and_cache(s3, tmp_path):
     # second store instance: everything comes from the on-disk cache, zero S3 traffic
     st2 = FieldStore(PRODUCTS["rtma"], s3, tmp_path)
     s3.range_requests.clear()
+    s3.pcp_requests.clear()
+    assert st2.stats["cache_hits"] == 0
     again = st2.load(jobs)
-    assert st2.stats["cache_hits"] == n and not s3.range_requests
+    assert st2.stats["cache_hits"] == n and not s3.range_requests and not s3.pcp_requests
     for key in SOURCE_VARIABLES:
         assert np.array_equal(again[(HOUR, key)], out[(HOUR, key)], equal_nan=True), key
 
@@ -115,7 +120,7 @@ def test_fetch_plan_only_asks_for_what_the_panels_need():
     for k in ("vis", "ceiling", "cloud", "wdir_raw", "u10", "v10"):
         assert need[k] == (0,), k                                       # current-field-only variables
     for k in ("dewpoint", "pressure"):
-        assert need[k] == INTERVALS, k                                  # feed change maps (directly or via derived fields)
+        assert need[k] == tuple(range(25)), k                           # change maps, and a day of wet bulbs for frozen precipitation
     for k in ("temp", "wind", "gust"):
         assert need[k] == tuple(range(25)), k                           # ... and the 24-hour summaries use every hourly analysis
     # every derived variable's inputs exist for every hour it is drawn at (series variables: and the hours before it)
@@ -204,3 +209,83 @@ def test_series_inputs_stack_hours_newest_first_and_tolerate_gaps():
     assert series_inputs(f, var, HOUR) is None
     f2 = {k: v for k, v in f.items() if k[0] != HOUR}                     # the valid hour itself missing: nothing to show
     assert series_inputs(f2, var, HOUR) is None
+
+
+# --------------------------------------------------------------------------- hourly precipitation analyses
+PCP = SOURCE_VARIABLES["pcp1"]
+
+
+def _load_pcp(store, cycles, now=None):
+    return store.load([(c, PCP) for c in cycles] + [(cycles[0], SOURCE_VARIABLES["temp"])], now)
+
+
+def test_precip_comes_from_its_own_cropped_file_and_matches_the_truth(s3, tmp_path):
+    st = FieldStore(PRODUCTS["rtma"], s3, tmp_path)
+    s3.pcp_requests.clear()
+    out = _load_pcp(st, [HOUR])
+    assert s3.pcp_requests == [f"rtma2p5.{HOUR:%Y%m%d}/rtma2p5.{HOUR:%Y%m%d%H}.pcp.184.grb2"]
+    # NOAA crops the precipitation grid differently: same lattice, different indices -> its own window, equal shape
+    assert st.pcp_grid.window != st.grid.window and st.pcp_grid.lat.shape == st.grid.lat.shape
+    assert np.abs(st.pcp_grid.lat - st.grid.lat).max() < 5e-4 and np.abs(st.pcp_grid.lon - st.grid.lon).max() < 5e-4
+    truth_in = s3.grid.precip_mm(HOUR)[st.grid.slices] / 25.4
+    assert out[(HOUR, "pcp1")].shape == st.grid.lat.shape
+    assert np.nanmax(truth_in) > 0.1                                                  # the demo band is in the window
+    assert np.allclose(out[(HOUR, "pcp1")], truth_in, atol=0.002)                      # inches, 0.0005 in packing + GRIB packing
+    assert np.load(st._path(HOUR, PCP)).dtype == np.uint16                              # cached packed, 2 bytes per cell
+
+
+def test_urma_precip_keeps_its_missing_cells(s3, tmp_path):
+    st = FieldStore(PRODUCTS["urma"], s3, tmp_path)
+    cyc = HOUR - timedelta(hours=3)
+    out = _load_pcp(st, [cyc])[(cyc, "pcp1")]
+    truth = s3.grid.precip_mm(cyc, urma=True)[st.grid.slices]
+    assert np.isnan(truth).any() and np.array_equal(np.isnan(out), np.isnan(truth))    # offshore NaN survives the uint16 cache
+    assert s3.pcp_requests[-1].endswith(".pcp_01h.wexp.grb2")
+
+
+def test_recent_precip_is_refetched_old_precip_is_not(s3, tmp_path):
+    st = FieldStore(PRODUCTS["rtma"], s3, tmp_path)               # refresh window: 3 h for RTMA
+    old = HOUR - timedelta(hours=10)
+    _load_pcp(st, [HOUR, old])
+    s3.pcp_requests.clear()
+    st2 = FieldStore(PRODUCTS["rtma"], s3, tmp_path)
+    _load_pcp(st2, [HOUR, old], NOW)
+    assert [k.split("/")[-1] for k in s3.pcp_requests] == [f"rtma2p5.{HOUR:%Y%m%d%H}.pcp.184.grb2"]      # only the recent hour was re-downloaded
+    s3.pcp_requests.clear()
+    _load_pcp(FieldStore(PRODUCTS["rtma"], s3, tmp_path), [HOUR, old])                  # no ``now``: pure cache, as before
+    assert not s3.pcp_requests
+
+
+def test_refresh_falls_back_to_the_cache_when_the_file_vanishes(tmp_path):
+    full = FakeS3(NOW)
+    first = FieldStore(PRODUCTS["rtma"], full, tmp_path)
+    kept = _load_pcp(first, [HOUR])[(HOUR, "pcp1")]
+    gone = FakeS3(NOW, missing={("pcp:rtma2p5", 0)})
+    again = _load_pcp(FieldStore(PRODUCTS["rtma"], gone, tmp_path), [HOUR], NOW)[(HOUR, "pcp1")]
+    assert np.array_equal(again, kept, equal_nan=True)
+    # and with nothing cached a missing file is simply unavailable
+    nothing = _load_pcp(FieldStore(PRODUCTS["rtma"], gone, tmp_path / "empty"), [HOUR])[(HOUR, "pcp1")]
+    assert nothing is None
+
+
+def test_precip_hours_needed_and_sums():
+    need = hours_needed()
+    assert need["pcp1"] == tuple(range(48))                       # 48 hourly files cover every period up to 48 h
+    for k in ("temp", "dewpoint", "pressure"):
+        assert need[k][-1] >= 24                                   # the frozen-precipitation product needs a day of wet bulbs
+    for n in (3, 6, 12, 24, 48):
+        v = VARIABLES[f"pcp{n}"]
+        assert v.series == n - 1 and v.requires == ("pcp1",) and panel_hours(v) == (0,) and v.min_series_fraction == 1.0
+
+
+def test_series_inputs_are_strict_for_precipitation():
+    from rtma_viewer.build import series_inputs
+    v = VARIABLES["pcp6"]
+    base = np.ones((4, 5), np.float32)
+    fields = {(HOUR - timedelta(hours=i), "pcp1"): base for i in range(6)}
+    assert series_inputs(fields, v, HOUR)[0].shape == (6, 4, 5)
+    fields[(HOUR - timedelta(hours=3), "pcp1")] = None            # one hour missing: a 6 h total would silently read low
+    assert series_inputs(fields, v, HOUR) is None
+    t = VARIABLES["tmax24"]                                        # temperature summaries keep their 75 % tolerance
+    tf = {(HOUR - timedelta(hours=i), "temp"): base for i in range(25) if i != 7}
+    assert series_inputs(tf, t, HOUR) is not None

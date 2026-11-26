@@ -228,3 +228,17 @@ def test_integer_count_and_hours_styles():
     assert np.array_equal(c.style_for("gustmax24", 0).levels, c.style_for("gust", 0).levels)
     for k in ("slt", "tmax24", "tmin24"):
         assert np.array_equal(c.style_for(k, 0).levels, c.style_for("temp", 0).levels)          # same legend: directly comparable
+
+
+def test_precipitation_ramp_is_shared_by_every_period():
+    ref = c.style_for("pcp1", 0)
+    assert list(ref.levels) == [0, 0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0]
+    assert ref.extend == "max" and len(ref.colors) == len(ref.levels)          # 14 bins + over
+    for key in ("pcp3", "pcp6", "pcp12", "pcp24", "pcp48", "fpcp24"):
+        s = c.style_for(key, 0)
+        assert np.array_equal(s.levels, ref.levels) and np.allclose(s.colors, ref.colors), key      # same colour = same amount
+    h = hexes(ref)
+    assert h[0] == "#f4f6f6" and h[-1] == "#5c0f1c"                              # nothing is near-white, 10+ in is maroon
+    assert np.ptp(ref.colors[0]) < 0.02 and np.ptp(ref.colors[-1]) > 0.05
+    cmap, _ = ref.cmap_norm()
+    assert cmap.N == len(ref.levels) - 1
