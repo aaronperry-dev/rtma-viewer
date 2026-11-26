@@ -5,14 +5,17 @@ Design rules
 * **Fixed physical levels.**  Every hour uses identical levels, so colours mean the
   same thing in every frame, for both products, and at every interval.
 * **Interpolated in OKLab**, so the ramps are perceptually even (no muddy mid-tones).
-* **Fine discrete bins** (1 °F for temperature and dew point): smooth-looking shading, an exact legend, and
-  PNGs that still quantise losslessly to an indexed palette.
-* Dew point is a sequential ramp, monotone in lightness.  Temperature uses the classic multi-hue operational ramp
-  (-40..120 °F) with a deliberate blue/green break at 32 °F.  Wind speed/gust and apparent temperature use the NWS
-  legends (sampled from NWS Gray/Portland maps): whole-number bins, exact legend colours.
-* Change maps use the WPC-style ramp: uneven whole-number levels (±1, 3, 5, 8, 12, 16, 20, 25, 30, 35, 40, 50) with a
-  white band for -1..+1, blues for cooling, oranges/reds/magenta for warming.  Identical for every interval
-  (1/3/6/12/24 h) and every variable, so a colour always means the same amount of change.
+* **Discrete bins with exact legends**, and PNGs that still quantise losslessly to an indexed palette.
+* Temperature, dew point, wet bulb, sea-level temperature and the 24 h max / min temperature all share one legend: the WPC
+  max/min temperature forecast ramp (-40..100 °F in 5 °F bins, with colours for below -40 and above 100), sampled from the
+  WPC Day 3 max / Day 4 min temperature maps.  Wind speed/gust and apparent temperature use the NWS legends (sampled from NWS
+  Gray/Portland maps): whole-number bins, exact legend colours.
+* Temperature-type change maps (temperature, dew point, wet bulb, apparent temperature, dew point depression; 1/3/6/12/24 h)
+  use the NWS NDFD "departure from climatology" ramp: uneven whole-number levels (±1, 2, 3, 4, 6, 8, 10, 12, 15, 18, 22, 26,
+  30) with a white band for -1..+1, yellows/oranges/reds/magentas for warming and greens/cyans/blues/violet for cooling.
+* Other change maps (wind, gust, pressure, humidity ...) use the WPC-style ramp: uneven whole-number levels (±1, 3, 5, 8,
+  12, 16, 20, 25, 30, 35, 40, 50) with a white band for -1..+1, blues for cooling, oranges/reds/magenta for warming.
+  Each ramp is identical for every interval, so a colour always means the same amount of change.
 """
 from __future__ import annotations
 
@@ -61,22 +64,6 @@ class Ramp:
 
 
 # --------------------------------------------------------------------------- ramps (physical units)
-TEMP_F = Ramp([  # classic -40..120 F operational ramp: magenta -> purple -> blue | green (32 F) -> yellow -> orange -> red -> pink
-    (-40, "#ffa4f0"), (-35, "#fd81f0"), (-30, "#fc53f1"), (-25, "#fa30f1"), (-20, "#e31eea"), (-15, "#ce14e3"),
-    (-10, "#b208da"), (-5, "#9e0bdc"), (0, "#8517e3"), (5, "#711fe8"), (10, "#5339e7"), (15, "#3957e1"),
-    (20, "#197ed8"), (25, "#1d91dc"), (30, "#23a9e1"),
-    (31.9, "#24aee2"),                       # <32 F: blue ...
-    (32.1, "#25b84a"),                       # ... >=32 F: green - the freezing line is unmistakable
-    (35, "#2ac045"), (40, "#64d318"), (45, "#8ee100"), (50, "#baef00"), (55, "#ddfb00"), (60, "#e5e002"),
-    (65, "#e0be04"), (70, "#da9306"), (75, "#d56e08"), (80, "#cf3e0a"), (85, "#ca190c"), (90, "#d10f24"),
-    (95, "#e12146"), (100, "#f53871"), (105, "#fa3e88"), (110, "#ea288b"), (115, "#dd188e"), (120, "#d20991"),
-])
-
-DEWPOINT_F = Ramp([  # dry sand -> green -> teal -> blue -> deep violet (monotone lightness)
-    (-20, "#f4ead0"), (10, "#e6dcae"), (25, "#c8d79a"), (35, "#9ccf9c"), (45, "#6dbda5"),
-    (55, "#3fa3ad"), (62, "#2a82b3"), (68, "#2f60ab"), (73, "#3d44a0"), (78, "#4d2c85"), (86, "#2f0f52"),
-])
-
 # Station (surface) pressure, mb: mostly a map of elevation, so a plain sequential ramp (monotone lightness): dark = high ground.
 PRESSURE_MB = Ramp([
     (800, "#2b1a5a"), (860, "#33408f"), (920, "#2d6fb0"), (980, "#2d9bb0"), (1010, "#62c29a"),
@@ -217,6 +204,35 @@ _WPC_COLORS = [
     "#d4b9da",                                                        # above +50
 ]
 
+# WPC max / min temperature forecast legend (°F): 5 °F bins from -40 to 100 plus an under (< -40) and over (> 100) colour.
+# Sampled from the WPC Day 3 maximum / Day 4 minimum temperature forecast maps.  A bin's colour is for values from its lower
+# level up to the next one (30..35 °F is the first teal).
+_TEMP_LEVELS = np.arange(-40, 101, 5, dtype=float)                                     # 29 edges -> 28 bins
+_TEMP_COLORS = [
+    "#ff71de",                                                                          # below -40
+    "#ffbee7", "#ffffff", "#d6dbe7", "#bdbede", "#9c9ac6", "#7369ad", "#52288c", "#10007b",   # -40 .. 0
+    "#103c9c", "#0065c6", "#299eff", "#4ac7ff", "#73d7ff", "#adffff",                  # 0 .. 30
+    "#31cfc6", "#009a94", "#10555a", "#086d29", "#31a252", "#73c373", "#a5d79c", "#d6ffbd",   # 30 .. 70
+    "#ffffb5", "#ffeb9c", "#ffcf73", "#ffae29", "#ff8e39", "#ff4d29",                  # 70 .. 100
+    "#e71818",                                                                          # above 100
+]
+
+# NWS NDFD "departure from climatology" legend (°F), used for temperature differences / changes: 25 bins on 26 edges plus
+# an under (< -30) and over (> 30) colour.  White for -1..+1; warm colours for positive, green -> blue -> violet for negative.
+_DEPARTURE_LEVELS = np.array([-30, -26, -22, -18, -15, -12, -10, -8, -6, -4, -3, -2, -1,
+                              1, 2, 3, 4, 6, 8, 10, 12, 15, 18, 22, 26, 30], float)
+_DEPARTURE_COLORS = [
+    "#dc2ece",                                                                          # below -30
+    "#8001fd", "#0432fd", "#035afa", "#047ffa", "#05befd", "#07fbfd", "#06e5ce", "#01cb80",   # -30 .. -6
+    "#067a04", "#02a103", "#02c402", "#04dd04",                                         # -6 .. -1
+    "#ffffff",                                                                          # -1 .. +1
+    "#cbe607", "#fffe08", "#fedd06", "#fcbf05", "#fda005", "#fb8406", "#ff5506",        # +1 .. +12
+    "#f90201", "#da0205", "#de0166", "#dd0396", "#e55ad8",                              # +12 .. +30
+    "#db2ecf",                                                                          # above +30
+]
+# variables (°F) whose change maps use the departure ramp
+_TEMP_CHANGE_KEYS = ("temp", "dewpoint", "wetbulb", "apparent", "dpdep")
+
 # Pressure changes are an order of magnitude smaller than temperature changes (a 3-hour fall of 4 mb is a fast one), so
 # pressure / MSLP use the same 25 colours on finer levels (same symmetric shape and white centre).
 _PRESSURE_CHANGE_LEVELS = np.array([-30, -24, -20, -16, -12, -9, -6, -4, -3, -2, -1, -0.5,
@@ -224,9 +240,16 @@ _PRESSURE_CHANGE_LEVELS = np.array([-30, -24, -20, -16, -12, -9, -6, -4, -3, -2,
 _PRESSURE_KEYS = ("pressure", "mslp")
 
 
+def temperature_style() -> Style:
+    return _custom(_TEMP_LEVELS, _TEMP_COLORS, "both", ticks=np.arange(-40, 101, 10), tick_fontsize=11, uniform=False)
+
+
 def change_style(var_key: str | None = None) -> Style:
-    cols = np.array([to_rgb(c) for c in _WPC_COLORS])
-    levels = _PRESSURE_CHANGE_LEVELS if var_key in _PRESSURE_KEYS else _WPC_LEVELS
+    if var_key in _TEMP_CHANGE_KEYS:
+        levels, hexes = _DEPARTURE_LEVELS, _DEPARTURE_COLORS
+    else:
+        levels, hexes = _PRESSURE_CHANGE_LEVELS if var_key in _PRESSURE_KEYS else _WPC_LEVELS, _WPC_COLORS
+    cols = np.array([to_rgb(c) for c in hexes])
     return Style(levels.copy(), cols, "both", levels.copy(), signed=True, uniform=True, tick_fontsize=10.5)
 
 
@@ -321,12 +344,12 @@ def mixing_ratio_style() -> Style:
 
 
 _ABS = {
-    "temp": lambda: sequential_style(TEMP_F, -40, 120, 1, 10, "both"),
-    "dewpoint": lambda: sequential_style(DEWPOINT_F, -20, 86, 1, 10, "both"),
+    "temp": temperature_style,
+    "dewpoint": temperature_style,
     "wind": wind_style,
     "gust": wind_style,
     "apparent": apparent_style,
-    "wetbulb": lambda: sequential_style(TEMP_F, -40, 120, 1, 10, "both"),    # same legend as 2 m temperature: directly comparable
+    "wetbulb": temperature_style,
     "rh": lambda: sequential_style(RH_PCT, 0, 100, 2, 10, "neither"),
     "dpdep": lambda: sequential_style(DPDEP_F, 0, 40, 1, 5, "max"),
     "wdir": direction_style,
@@ -337,11 +360,11 @@ _ABS = {
     "cloud": lambda: sequential_style(CLOUD_PCT, 0, 100, 5, 10, "neither"),
     "terrain": terrain_style,
     # derived winter diagnostics
-    "slt": lambda: sequential_style(TEMP_F, -40, 120, 1, 10, "both"),       # same legend as 2 m temperature
+    "slt": temperature_style,
     "rhi": lambda: sequential_style(RH_ICE_PCT, 0, 140, 2, 20, "max"),
     "mixr": mixing_ratio_style,
-    "tmax24": lambda: sequential_style(TEMP_F, -40, 120, 1, 10, "both"),
-    "tmin24": lambda: sequential_style(TEMP_F, -40, 120, 1, 10, "both"),
+    "tmax24": temperature_style,
+    "tmin24": temperature_style,
     "trange24": lambda: sequential_style(RANGE_F, 0, 45, 1, 5, "max"),
     "frzhrs24": lambda: sequential_style(FREEZE_HOURS, 0, 24, 1, 3, "neither"),
     "ftx24": crossings_style,
