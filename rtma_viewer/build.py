@@ -144,7 +144,8 @@ def main(argv=None) -> int:
                 "intervals": list(INTERVALS),
                 "variables": [{"key": v.key, "label": v.label, "long_name": v.long_name, "unit": v.unit,
                                "group": v.group, "note": v.note, "circular": v.circular, "diverging": v.diverging,
-                               "categories": list(v.categories), "digits": v.stat_decimals}
+                               "categories": list(v.categories), "digits": v.stat_decimals,
+                               "lines": [{"value": lv, "color": col} for lv, col in v.lines]}
                               for v in PANEL_VARIABLES.values()],
                 "products": {}}
     for key in args.products.split(","):

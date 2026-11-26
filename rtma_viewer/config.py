@@ -1,7 +1,7 @@
 """Central configuration: products, variables, region, cities."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable
 
 import numpy as np
@@ -105,6 +105,7 @@ class Variable:
     diverging: bool = False            # a current field that is signed (advection, convergence ...): "+" on the labels
     categories: tuple[str, ...] = ()   # integer-coded classes 0..n-1 (flight category ...): shown as area shares, not min / max
     stat_decimals: int = 1             # digits of the low / mean / high statistics on the page
+    lines: tuple[tuple[float, str], ...] = ()   # (value, colour) reference contours drawn over the current-field map
 
 
 VARIABLES: dict[str, Variable] = {
@@ -288,6 +289,11 @@ VARIABLES: dict[str, Variable] = {
                              "uses. Real summits are higher and valleys lower. Useful for reading elevation effects, upslope "
                              "flow and cold-air pooling.", stat_decimals=0),
 }
+# Reference lines on every absolute temperature-type map (°F): the freezing line in red and the 0 °F line in blue.  Drawn only
+# where the field actually crosses the value, never on change maps.
+TEMP_LINES = ((32.0, "#e00000"), (0.0, "#0a3cff"))
+_TEMP_LINE_KEYS = ("temp", "dewpoint", "wetbulb", "apparent", "slt", "tmax24", "tmin24", "wcmin24")
+VARIABLES = {k: replace(v, lines=TEMP_LINES) if k in _TEMP_LINE_KEYS else v for k, v in VARIABLES.items()}
 SOURCE_VARIABLES: dict[str, Variable] = {k: v for k, v in VARIABLES.items() if v.derive is None}
 PANEL_VARIABLES: dict[str, Variable] = {k: v for k, v in VARIABLES.items() if not v.hidden}     # what gets maps / a page entry
 

@@ -137,6 +137,7 @@ def label_text(var: Variable | None, v: float, signed: bool) -> str:
     return f"{q:+.{d}f}" if signed else f"{q:.{d}f}"
 
 
+LINE_SIGMA_CELLS = 1.0           # ~2.5 km: just enough to stop single-cell speckle from making tiny rings around 32 / 0 F
 ISOBAR_SIGMA_CELLS = 5.0        # ~12 km: removes the terrain-scale noise of the sea-level reduction, keeps fronts / troughs
 
 
@@ -175,6 +176,17 @@ def render_panel(ctx: MapContext, field: np.ndarray, style: Style, *, texts: tup
     add(L.coast, edgecolor="black", linewidth=1.2, zorder=4)
 
     halo = lambda w: [pe.withStroke(linewidth=w, foreground="white")]
+
+    # reference lines (32 °F red, 0 °F blue ...): contours of a very lightly smoothed field, on a white halo so they stay
+    # visible over the dark ramp colours; only where the field crosses the value; never on change maps
+    if var is not None and var.lines and not signed:
+        sm = smooth(field, LINE_SIGMA_CELLS)
+        lo, hi = np.nanmin(sm), np.nanmax(sm)
+        for level, colour in var.lines:
+            if lo < level < hi:
+                msk = np.ma.masked_invalid(sm)
+                ax.contour(ctx.x, ctx.y, msk, levels=[level], colors="white", linewidths=3.3, zorder=5)
+                ax.contour(ctx.x, ctx.y, msk, levels=[level], colors=colour, linewidths=2.1, zorder=5.1)
 
     # isobars (MSLP): contours of a lightly smoothed field, every ``isobar_step`` mb, labelled every other one
     if var is not None and var.isobar_step and not signed:
