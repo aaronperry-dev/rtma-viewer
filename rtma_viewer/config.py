@@ -120,14 +120,23 @@ class Variable:
     stat_decimals: int = 1             # digits of the low / mean / high statistics on the page
     lines: tuple[tuple[float, str], ...] = ()   # (value, colour) reference contours drawn over the current-field map
     source: str = "idx"                # "idx": a message of the 2dvaranl file (byte range); "pcp": the hourly precipitation file
-    min_series_fraction: float | None = None   # share of the hourly inputs a series product needs (None: build.MIN_SERIES_FRACTION)
+    partial_series: bool = False       # use whatever hourly inputs exist: each input's missing hours are skipped on their own, and the
+                                       # build records how many hours of ``period_hours`` were really available
+    period_hours: int = 0              # length of the accumulation period (precipitation totals), for the "N of M h available" note
     show_period: bool = True           # header says "(past N h)" for series products (off when the title already names the period)
 
 
 _PCP_NOTE = ("Liquid-equivalent precipitation analysed on the 2.5 km grid. RTMA uses the radar-only MRMS estimate (about 15 min after "
              "the hour, no gauge correction - radar is least reliable in snow, in the mountains and at long range); URMA uses the "
              "quality-controlled, gauge-corrected Stage IV analysis and is re-made as River Forecast Centre data arrive. It is water, "
-             "not snow depth, and it is an analysis of what fell, not a forecast. ")
+             "not snow depth, and it is an analysis of what fell, not a forecast. If some of the hourly analyses are missing the total "
+             "adds up the ones that exist, says how many that was, and may therefore read low. ")
+
+_FROZEN_NOTE = ("Liquid-equivalent frozen precipitation (snow, sleet and freezing rain together): the precipitation that fell while "
+                "the surface wet bulb was at or below 32 °F (average of the wet bulb at the start and end of each hour). It is water, not "
+                "snow depth - no snow-to-liquid ratio is applied. It cannot tell the frozen types apart, ignores the air aloft (rain can "
+                "fall through a cold surface layer; snow can melt before it lands) and treats an hour as all-or-nothing, so it is a rough "
+                "guide to where precipitation fell cold, not a forecast of accumulation. Same colours as the precipitation maps. " + _PCP_NOTE)
 
 VARIABLES: dict[str, Variable] = {
     # ------------------------------------------------------------------ temperature & moisture
@@ -205,34 +214,49 @@ VARIABLES: dict[str, Variable] = {
                      changes=False, pack=(0.0, 2000.0), decimals=2, stat_decimals=2, labeler=_pcp_label, show_period=False,
                      note=_PCP_NOTE + "Water falling in the hour ending at the valid time."),
     "pcp3": Variable("pcp3", "3 h precip", "3-Hour Precipitation Analysis", "in", "", "", requires=("pcp1",),
-                      derive=series_sum, series=2, group=G_PCP, changes=False, decimals=2, stat_decimals=2,
-                      labeler=_pcp_label, show_period=False, min_series_fraction=1.0,
-                      note=_PCP_NOTE + "Sum of the 3 hourly analyses ending at the valid time; blank where any of them is missing."),
+                      derive=series_sum, series=2, period_hours=3, partial_series=True, group=G_PCP, changes=False,
+                      decimals=2, stat_decimals=2, labeler=_pcp_label, show_period=False,
+                      note=_PCP_NOTE + "Sum of the 3 hourly analyses ending at the valid time."),
     "pcp6": Variable("pcp6", "6 h precip", "6-Hour Precipitation Analysis", "in", "", "", requires=("pcp1",),
-                      derive=series_sum, series=5, group=G_PCP, changes=False, decimals=2, stat_decimals=2,
-                      labeler=_pcp_label, show_period=False, min_series_fraction=1.0,
-                      note=_PCP_NOTE + "Sum of the 6 hourly analyses ending at the valid time; blank where any of them is missing."),
+                      derive=series_sum, series=5, period_hours=6, partial_series=True, group=G_PCP, changes=False,
+                      decimals=2, stat_decimals=2, labeler=_pcp_label, show_period=False,
+                      note=_PCP_NOTE + "Sum of the 6 hourly analyses ending at the valid time."),
     "pcp12": Variable("pcp12", "12 h precip", "12-Hour Precipitation Analysis", "in", "", "", requires=("pcp1",),
-                      derive=series_sum, series=11, group=G_PCP, changes=False, decimals=2, stat_decimals=2,
-                      labeler=_pcp_label, show_period=False, min_series_fraction=1.0,
-                      note=_PCP_NOTE + "Sum of the 12 hourly analyses ending at the valid time; blank where any of them is missing."),
+                      derive=series_sum, series=11, period_hours=12, partial_series=True, group=G_PCP, changes=False,
+                      decimals=2, stat_decimals=2, labeler=_pcp_label, show_period=False,
+                      note=_PCP_NOTE + "Sum of the 12 hourly analyses ending at the valid time."),
     "pcp24": Variable("pcp24", "24 h precip", "24-Hour Precipitation Analysis", "in", "", "", requires=("pcp1",),
-                      derive=series_sum, series=23, group=G_PCP, changes=False, decimals=2, stat_decimals=2,
-                      labeler=_pcp_label, show_period=False, min_series_fraction=1.0,
-                      note=_PCP_NOTE + "Sum of the 24 hourly analyses ending at the valid time; blank where any of them is missing."),
+                      derive=series_sum, series=23, period_hours=24, partial_series=True, group=G_PCP, changes=False,
+                      decimals=2, stat_decimals=2, labeler=_pcp_label, show_period=False,
+                      note=_PCP_NOTE + "Sum of the 24 hourly analyses ending at the valid time."),
     "pcp48": Variable("pcp48", "48 h precip", "48-Hour Precipitation Analysis", "in", "", "", requires=("pcp1",),
-                      derive=series_sum, series=47, group=G_PCP, changes=False, decimals=2, stat_decimals=2,
-                      labeler=_pcp_label, show_period=False, min_series_fraction=1.0,
-                      note=_PCP_NOTE + "Sum of the 48 hourly analyses ending at the valid time; blank where any of them is missing."),
-    "fpcp24": Variable("fpcp24", "24 h frozen precip", "24-Hour Precipitation, Wet Bulb at or Below 32°F", "in", "", "",
-                       requires=("pcp1", "temp", "dewpoint", "pressure"), derive=frozen_precipitation, series=24, group=G_PCP,
-                       changes=False, decimals=2, stat_decimals=2, labeler=_pcp_label, show_period=False,
-                       min_series_fraction=1.0,
-                       note="The part of the last 24 hours' liquid-equivalent precipitation that fell while the surface wet bulb "
-                            "was at or below 32 °F (average of the wet bulb at the start and end of each hour): snow, sleet or "
-                            "freezing rain. It is a rough guide, not a snowfall map - it ignores temperatures aloft (rain can fall "
-                            "through a cold surface layer), snow-to-liquid ratios and melting. Inches of water; a 10:1 snow-to-liquid "
-                            "ratio is the textbook average, higher for cold dry snow and lower for wet snow. " + _PCP_NOTE),
+                      derive=series_sum, series=47, period_hours=48, partial_series=True, group=G_PCP, changes=False,
+                      decimals=2, stat_decimals=2, labeler=_pcp_label, show_period=False,
+                      note=_PCP_NOTE + "Sum of the 48 hourly analyses ending at the valid time."),
+    "fpcp1": Variable("fpcp1", "1 h frozen precip", "1-Hour Frozen Precipitation", "in", "", "",
+                       requires=("pcp1", "temp", "dewpoint", "pressure"), derive=frozen_precipitation, series=1, period_hours=1,
+                       partial_series=True, group=G_PCP, changes=False, decimals=2, stat_decimals=2, labeler=_pcp_label,
+                       show_period=False, note=_FROZEN_NOTE),
+    "fpcp3": Variable("fpcp3", "3 h frozen precip", "3-Hour Frozen Precipitation", "in", "", "",
+                       requires=("pcp1", "temp", "dewpoint", "pressure"), derive=frozen_precipitation, series=3, period_hours=3,
+                       partial_series=True, group=G_PCP, changes=False, decimals=2, stat_decimals=2, labeler=_pcp_label,
+                       show_period=False, note=_FROZEN_NOTE),
+    "fpcp6": Variable("fpcp6", "6 h frozen precip", "6-Hour Frozen Precipitation", "in", "", "",
+                       requires=("pcp1", "temp", "dewpoint", "pressure"), derive=frozen_precipitation, series=6, period_hours=6,
+                       partial_series=True, group=G_PCP, changes=False, decimals=2, stat_decimals=2, labeler=_pcp_label,
+                       show_period=False, note=_FROZEN_NOTE),
+    "fpcp12": Variable("fpcp12", "12 h frozen precip", "12-Hour Frozen Precipitation", "in", "", "",
+                       requires=("pcp1", "temp", "dewpoint", "pressure"), derive=frozen_precipitation, series=12, period_hours=12,
+                       partial_series=True, group=G_PCP, changes=False, decimals=2, stat_decimals=2, labeler=_pcp_label,
+                       show_period=False, note=_FROZEN_NOTE),
+    "fpcp24": Variable("fpcp24", "24 h frozen precip", "24-Hour Frozen Precipitation", "in", "", "",
+                       requires=("pcp1", "temp", "dewpoint", "pressure"), derive=frozen_precipitation, series=24, period_hours=24,
+                       partial_series=True, group=G_PCP, changes=False, decimals=2, stat_decimals=2, labeler=_pcp_label,
+                       show_period=False, note=_FROZEN_NOTE),
+    "fpcp48": Variable("fpcp48", "48 h frozen precip", "48-Hour Frozen Precipitation", "in", "", "",
+                       requires=("pcp1", "temp", "dewpoint", "pressure"), derive=frozen_precipitation, series=48, period_hours=48,
+                       partial_series=True, group=G_PCP, changes=False, decimals=2, stat_decimals=2, labeler=_pcp_label,
+                       show_period=False, note=_FROZEN_NOTE),
     # ------------------------------------------------------------------ wind
     "wind": Variable("wind", "Wind speed", "10m Wind Speed", "mph", "WIND", "10 m above ground", _ms_to_mph,
                      components=("UGRD", "VGRD"), group=G_WIND),

@@ -143,7 +143,8 @@ class FieldStore:
 
         # 3) decode (single thread: eccodes is not thread-safe), window, convert, cache
         raw: dict = {}
-        for item, data in blobs.items():
+        for item in list(blobs):
+            data = blobs.pop(item)                              # release each download once decoded
             if data is None:
                 raw[item] = None
                 continue
@@ -151,7 +152,7 @@ class FieldStore:
             if self.grid is None and geo is not None:
                 self.grid = grib.make_window(*geo)
                 self.grid.save(self.dir / "grid.npz")
-            raw[item] = vals[self.grid.slices]
+            raw[item] = vals[self.grid.slices].copy()           # a copy: a view would keep every full CONUS array alive
 
         for cyc, var in todo:
             parts = plan.get((cyc, var.key))
@@ -198,7 +199,8 @@ class FieldStore:
         with ThreadPoolExecutor(self.workers) as pool:
             blobs = list(pool.map(lambda cv: self.src.fetch_pcp(cv[0]), todo))
         self.stats["pcp_files_fetched"] += sum(b is not None for b in blobs)
-        for (cyc, var), blob in zip(todo, blobs):
+        for i, (cyc, var) in enumerate(todo):
+            blob, blobs[i] = blobs[i], None                 # release each file once decoded
             key = (cyc, var.key)
             if blob is None:                                # not published: keep what the cache had, if anything
                 out[key] = stale.get(key)

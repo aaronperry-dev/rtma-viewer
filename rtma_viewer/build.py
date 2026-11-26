@@ -29,14 +29,35 @@ MIN_SERIES_FRACTION = 0.75       # a 24-hour summary needs at least this share o
 
 def series_inputs(fields: dict, var, valid: datetime):
     """Stacks (hours + 1, ny, nx) of each input over the ``var.series`` hours up to ``valid`` (index 0 = valid time), with NaN
-    planes for hours that are missing for *any* input.  None if too few hours are available."""
-    cols = [[fields.get((valid - timedelta(hours=i), k)) for i in range(var.series + 1)] for k in var.requires]
-    ok = [all(c[i] is not None for c in cols) for i in range(var.series + 1)]
-    need = MIN_SERIES_FRACTION if var.min_series_fraction is None else var.min_series_fraction
-    if sum(ok) < need * (var.series + 1) - 1e-9 or not ok[0]:
+    planes for hours that are missing.  None if there is too little to work with.
+
+    Ordinary summaries (24-hour temperature ...) blank an hour for *all* inputs when any input lacks it, and need 75 % of the
+    hours.  ``partial_series`` products (precipitation totals) use whatever exists: each input's missing hours are blanked on their
+    own, and one usable accumulation hour is enough (``available_hours`` counts them, and the map says how many there were)."""
+    n = var.series + 1
+    cols = [[fields.get((valid - timedelta(hours=i), k)) for i in range(n)] for k in var.requires]
+    if var.partial_series:
+        if available_hours(fields, var, valid) == 0:
+            return None
+        blank = np.full(next(p for c in cols for p in c if p is not None).shape, np.nan, np.float32)
+        return [np.stack([p if p is not None else blank for p in c]) for c in cols]
+    ok = [all(c[i] is not None for c in cols) for i in range(n)]
+    if sum(ok) < MIN_SERIES_FRACTION * n or not ok[0]:
         return None
     blank = np.full(next(c[0] for c in cols).shape, np.nan, np.float32)
     return [np.stack([c[i] if ok[i] else blank for i in range(len(ok))]) for c in cols]
+
+
+def available_hours(fields: dict, var, valid: datetime) -> int:
+    """How many of a precipitation total's ``var.period_hours`` hourly accumulations can actually be used: the hour needs its
+    precipitation analysis and, for frozen precipitation, a wet bulb at one end of the hour at least."""
+    got = lambda key, i: fields.get((valid - timedelta(hours=i), key)) is not None
+    wet = [k for k in var.requires if k != "pcp1"]
+    count = 0
+    for i in range(var.period_hours):
+        if got("pcp1", i) and (not wet or all(got(k, i) for k in wet) or all(got(k, i + 1) for k in wet)):
+            count += 1
+    return count
 
 
 def build_product(product, client, now, out: Path, cache: Path, layers, dpi: int, colors: int) -> dict:
@@ -58,6 +79,7 @@ def build_product(product, client, now, out: Path, cache: Path, layers, dpi: int
         if var.static:
             for h in INTERVALS:
                 fields[(cycle - timedelta(hours=h), var.key)] = fields.get((cycle, var.key))
+    hours: dict[tuple[datetime, str], int] = {}               # usable hourly inputs of each precipitation total
     geom = Geometry.from_latlon(store.grid.lat, store.grid.lon) if store.grid is not None else None
     for var in VARIABLES.values():                        # derived variables (in dependency order), from the cached fields
         if var.derive is None:
@@ -68,7 +90,12 @@ def build_product(product, client, now, out: Path, cache: Path, layers, dpi: int
             if parts is None or any(a is None for a in parts):
                 fields[(t, var.key)] = None
                 continue
-            fields[(t, var.key)] = var.derive(*parts, geom=geom) if var.needs_geom else var.derive(*parts)
+            res = var.derive(*parts, geom=geom) if var.needs_geom else var.derive(*parts)
+            if var.partial_series:
+                hours[(t, var.key)] = available_hours(fields, var, t)
+                if not np.isfinite(res).any():            # nothing usable anywhere (e.g. no wet bulb for any hour)
+                    res = None
+            fields[(t, var.key)] = res
     ctx = render.MapContext.build(store.grid, layers)
 
     total_png = 0
@@ -91,7 +118,8 @@ def build_product(product, client, now, out: Path, cache: Path, layers, dpi: int
                 continue
             data = cur if h == 0 else cur - prev
             style, signed = render.style_and_flags(var, h)
-            texts = render.panel_text(product, var, h, cycle, ref_t if h else None)
+            have = hours.get((cycle - timedelta(hours=h), var.key)) if var.period_hours else None
+            texts = render.panel_text(product, var, h, cycle, ref_t if h else None, hours=have)
             rel = f"img/{product.key}_{var.key}_{h}h.png"
             stats = render.region_stats(ctx, data, circular=var.circular, categories=var.categories)
             size = render.render_panel(ctx, data, style, texts=texts, signed=signed, out=out / rel,
@@ -99,6 +127,10 @@ def build_product(product, client, now, out: Path, cache: Path, layers, dpi: int
             total_png += size
             rec["panels"][var.key][str(h)] = {"file": rel, "ref": iso(ref_t) if h else None, **stats,
                                               "stations": render.station_values(ctx, data, skip)}
+            if have is not None:                          # incomplete totals say so, on the map and on the page
+                rec["panels"][var.key][str(h)].update(hours=have, period=var.period_hours)
+                if have < var.period_hours:
+                    log.warning("%s %s: only %d of %d hourly analyses available", product.key, var.key, have, var.period_hours)
     rec.update(status="ok", cycle=iso(cycle), lag_minutes=int((now - cycle).total_seconds() // 60))
     rec["bytes"] = {"png": total_png, "downloaded": store.src.bytes_downloaded,
                     "s3_requests": store.src.requests, **dict(store.stats)}

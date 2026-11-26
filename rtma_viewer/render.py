@@ -284,12 +284,14 @@ def _z(t: datetime) -> str:
     return f"{t:%H:%Mz %a %b} {t.day}"
 
 
-def panel_text(product: Product, var: Variable, interval: int, valid: datetime, ref: datetime | None):
+def panel_text(product: Product, var: Variable, interval: int, valid: datetime, ref: datetime | None, hours: int | None = None):
     """(left bold, left regular, right bold, right regular) - e.g. 'RTMA' ': 2m Temperature (°F)' 'Valid' ': 17:00z Thu Nov 5 2026'."""
     chg = f" {interval}-hr Change" if interval else ""
     right = f": {_z(valid)} {valid.year}" + (f"  (vs {_z(ref)})" if ref else "")
     if var.series and var.show_period:                                            # period products: say what window they summarise
         right += f"  (past {var.series} h)"
+    if hours is not None and var.period_hours and hours < var.period_hours:     # a total built from fewer hours than its name says
+        right += f"  ({hours} of {var.period_hours} h available)"
     unit = f" ({var.unit})" if var.unit else ""
     return product.label, f": {var.long_name}{chg}{unit}", "Valid", right
 

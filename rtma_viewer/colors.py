@@ -336,19 +336,17 @@ def crossings_style() -> Style:
     return st
 
 
-# Liquid-equivalent precipitation, inches: the same fixed levels for every period (1 h ... 48 h) so a colour always means the same
-# amount.  Near-white for under 0.01 in, then greens (light), blues (moderate), purples / magenta (heavy), red -> maroon (extreme).
-_PCP_LEVELS = [0, 0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0]
-_PCP_COLORS = ["#f4f6f6",                                                               # < 0.01 (none)
-               "#c7efb8", "#8fdc8a", "#4bbf63", "#1f9a55",                              # 0.01 .. 0.50
-               "#5bc0eb", "#2b8ad8", "#1f55bd", "#3c2f9e",                              # 0.50 .. 2
-               "#7b2fb5", "#b02bb0", "#e0309a",                                         # 2 .. 6
-               "#e8453c", "#a51f24",                                                    # 6 .. 10
-               "#5c0f1c"]                                                               # 10+
+# Liquid precipitation, inches: the NWS "Total Precipitation Forecast" legend (as drawn by NWS Boston/Taunton), the same for every
+# period (1 h ... 48 h) so a colour always means the same amount.  Bins: 0.00 | 0.01-0.09 | 0.10-0.24 | 0.25-0.49 | 0.50-0.99 |
+# 1.00-1.49 | 1.50-1.99 | 2.00-2.99 | 3.00-3.99 | 4.00-5.99 | 6.00-7.99 | 8.00-9.99 | 10-14.99 | 15-19.99 | 20-29.99 | 30-50.
+_PCP_LEVELS = [0, 0.01, 0.10, 0.25, 0.50, 1.00, 1.50, 2.00, 3.00, 4.00, 6.00, 8.00, 10.0, 15.0, 20.0, 30.0, 50.0]
+_PCP_COLORS = ["#ffffff", "#c7e9c0", "#a1d99b", "#74c476", "#31a353", "#006d2c", "#ffff8a", "#ffcc4f",
+               "#fe8d3c", "#fc4e2a", "#d61a1c", "#ad0026", "#700026", "#3b0030", "#4c0073", "#ffdbff",
+               "#ffdbff"]                                                               # over 50 in: the top colour
 
 
 def precip_style() -> Style:
-    return _custom(_PCP_LEVELS, _PCP_COLORS, "max", ticks=_PCP_LEVELS[1:], tick_fontsize=10.5)
+    return _custom(_PCP_LEVELS, _PCP_COLORS, "max", ticks=_PCP_LEVELS[1:], tick_fontsize=10)
 
 
 def mixing_ratio_style() -> Style:
@@ -387,7 +385,8 @@ _ABS = {
     "gustmax24": wind_style,
     "frostbite": frostbite_style,
     "pcp1": precip_style, "pcp3": precip_style, "pcp6": precip_style, "pcp12": precip_style, "pcp24": precip_style,
-    "pcp48": precip_style, "fpcp24": precip_style,
+    "pcp48": precip_style,
+    "fpcp1": precip_style, "fpcp3": precip_style, "fpcp6": precip_style, "fpcp12": precip_style, "fpcp24": precip_style, "fpcp48": precip_style,
     "pgrad": lambda: sequential_style(PGRAD_MB, 0, 5, 0.25, 1, "max"),
     "fltcat": flight_category_style,
     "tadv": lambda: diverging_style([-30, -20, -12, -8, -5, -3, -1, 1, 3, 5, 8, 12, 20, 30]),

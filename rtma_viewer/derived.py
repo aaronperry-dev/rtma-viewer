@@ -281,9 +281,14 @@ def series_range(stack):
 
 
 def series_sum(stack):
-    """Total over the hourly stack (precipitation accumulations).  A NaN plane (an hour that is missing) makes the total NaN
-    rather than silently low."""
-    return np.sum(np.asarray(stack, np.float32), axis=0, dtype=np.float32)
+    """Total over an hourly stack of accumulations, using whatever hours exist: a NaN is an hour (or cell) with no data and is
+    skipped, so a cell with no data in any hour stays NaN while an incomplete total reads low rather than disappearing."""
+    st = np.asarray(stack, np.float32)
+    out = np.nansum(st, axis=0, dtype=np.float32)
+    out[~np.isfinite(st).any(axis=0)] = np.nan
+    return out
+
+
 
 
 def frozen_precipitation(pcp, t_f, td_f, p_mb):
@@ -291,16 +296,29 @@ def frozen_precipitation(pcp, t_f, td_f, p_mb):
 
     ``pcp[k]`` is the accumulation of the hour ending ``k`` hours before the valid time (k = 0 .. n-1); the temperature, dew
     point and pressure stacks have n + 1 planes (index k = k hours before the valid time), so each hour has the wet bulb at
-    both of its ends.  An hour counts as frozen when the mean of those two wet bulbs is at or below 32 °F."""
+    both of its ends.  An hour counts as frozen when the mean of those two wet bulbs is at or below 32 °F.
+
+    Missing data (NaN planes) is skipped: an hour with no precipitation analysis adds nothing, and an hour with only one
+    wet-bulb end uses that one; an hour with neither cannot be classified and adds nothing.  A cell with no usable hour at all is NaN."""
     pcp = np.asarray(pcp, np.float32)
     n = pcp.shape[0] - 1                                    # the stacks share one length: n hourly accumulations, n + 1 instants
-    wb = wet_bulb(np.asarray(t_f, np.float64), np.asarray(td_f, np.float64), np.asarray(p_mb, np.float64))
-    mid = 0.5 * (wb[:n] + wb[1:n + 1])                      # wet bulb averaged over each accumulation hour
-    with np.errstate(invalid="ignore"):
-        frozen = mid <= 32.0
-    out = np.where(frozen, pcp[:n], 0.0).astype(np.float32)
-    out[~np.isfinite(mid) | ~np.isfinite(pcp[:n])] = np.nan
-    return out.sum(axis=0, dtype=np.float32)
+
+    def wb_at(k):                                           # one plane at a time: a whole 49-hour stack of float64 temporaries
+        return wet_bulb(np.asarray(t_f[k], np.float64),     # needs gigabytes
+                        np.asarray(td_f[k], np.float64), np.asarray(p_mb[k], np.float64))
+
+    total = np.zeros(pcp.shape[1:], np.float32)
+    seen = np.zeros(pcp.shape[1:], bool)
+    b = wb_at(0)
+    for k in range(n):
+        a, b = b, wb_at(k + 1)
+        with np.errstate(invalid="ignore"):
+            mid = np.where(np.isfinite(a) & np.isfinite(b), 0.5 * (a + b), np.where(np.isfinite(a), a, b))
+            usable = np.isfinite(mid) & np.isfinite(pcp[k])
+            total += np.where(usable & (mid <= 32.0), pcp[k], np.float32(0.0))
+        seen |= usable
+    total[~seen] = np.nan
+    return total
 
 
 def _below_and_crossing(stack, threshold):
