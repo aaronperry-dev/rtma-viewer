@@ -1,6 +1,6 @@
 # New England RTMA / URMA viewer
 
-Hourly maps of **61 variables** from NOAA's **RTMA** and **URMA** (2.5 km), each as the current field plus
+Hourly maps of **63 variables** from NOAA's **RTMA** and **URMA** (2.5 km), each as the current field plus
 **1 / 3 / 6 / 12 / 24-hour change** where a change is meaningful, published as a static dashboard on GitHub Pages:
 
 * **Basics:** temperature, dew point, apparent temperature, wind speed / gust / **direction**, **surface pressure**,
@@ -10,6 +10,8 @@ Hourly maps of **61 variables** from NOAA's **RTMA** and **URMA** (2.5 km), each
 * **Winter hazards and cold-air diagnostics:** **sea-level-adjusted temperature**, **flight category**, **frostbite time**, and
   **past-24-hour** maximum / minimum / range, **hours at or below 32 F**, **freeze-thaw crossings**, **minimum wind chill**
   and **maximum gust**.
+* **Surface analysis (fronts):** the **WPC surface analysis** (their fronts, troughs, highs and lows, drawn with the standard
+  symbols over MSLP) and an **experimental objective front / H-L layer** computed from the analysis itself.
 * **Surface kinematics:** **temperature and dew point advection**, **convergence**, **vorticity**, **frontogenesis** and
   **terrain-forced (upslope) lift** from the 10 m wind.
 * **Precipitation (analysis, not forecast):** **1 / 3 / 6 / 12 / 24 / 48-hour liquid-equivalent precipitation** from NOAA's hourly
@@ -163,6 +165,8 @@ as KMWN reads the analysis at the grid's terrain height, not at 1917 m.)
 | **Surface pressure** | `PRES` | yes | station pressure at the analysis terrain height (mostly a map of elevation); change maps use finer levels (0.5 mb centre, 30 mb ends) |
 | **MSLP** | derived: PRES, HGT, T, Td | yes | isobars every 2 mb (labelled every 4) from a lightly smoothed field; summit stations above 1,000 m are not labelled |
 | **Pressure gradient** | derived: MSLP, terrain | no | mb per 100 km of MSLP smoothed over ~60 km; blank above 1,000 m; ~17 mph geostrophic wind per mb / 100 km |
+| **Fronts (WPC)** | WPC coded surface bulletin, MSLP | no | WPC's fronts, troughs and H / L at the nearest 3-hourly analysis; see "Surface analysis" |
+| **Fronts (objective)** | derived: T, Td, PRES, MSLP, 10 m wind, terrain | no | experimental machine-drawn frontal zones and H / L; see "Surface analysis" |
 | **Visibility** | `VIS` | no | statute miles; the analysis tops out near 10 mi |
 | **Cloud ceiling** | `CEIL` | no | feet AGL, aviation breaks (500 / 1,000 / 3,000 ft); 12,000 ft and up (or none) is `CLR` |
 | **Flight category** | derived: visibility, ceiling | no | LIFR / IFR / MVFR / VFR (the worse of the two), shown as area shares |
@@ -254,6 +258,32 @@ use, because otherwise wind blowing along a slope would register as warm or cold
 **RH with respect to ice** uses Alduchov-Eskridge saturation pressures over ice below 0 C (1.032 hPa at -20 C and 0.128 hPa at -40 C,
 matching standard tables) and over liquid water above. The published dew point is with respect to liquid water, so saturated air
 reads above 100 % below freezing (121 % at -20 C): that is supersaturation over ice, not an error.
+
+### Surface analysis: fronts, highs and lows
+
+Two maps over RTMA / URMA sea-level pressure (isobars every 2 mb, no station values so the symbols stay readable):
+
+* **Fronts (WPC).** The National Weather Service Weather Prediction Center draws the surface analysis by hand and publishes it every
+  3 hours as the *coded surface bulletin* (`CODSUS`, https://tgftp.nws.noaa.gov/data/raw/as/asus02.kwbc.cod.sus.txt). Each build
+  downloads the newest bulletin and files it under `.cache/fields/wpc/` (the build cache restored by GitHub Actions), because the
+  server keeps only the latest one. The positions are WPC's, only joined by a smooth curve through the points; they are reported
+  to 0.1 degree. The bulletin lists a front as a line without a direction of motion, so the triangles (cold, blue), semicircles
+  (warm, red), alternating pair (stationary) and purple triangle/semicircle pair (occluded) are put on the side the front is
+  moving toward, taken from the analysed equivalent potential temperature on either side of the line. Troughs (WPC's `TROF`, which
+  also covers outflow boundaries, squall lines and dry lines) are dashed brown. The analysis is valid only at 00, 03 ... 21Z and
+  is published about 90 minutes late, so each map uses the analysis closest to the map time (within 90 minutes) or else the
+  newest one up to 3 hours earlier, and the label on the map says which. The archive only grows forward: a freshly started site has no
+  earlier bulletins. If the NWS server cannot be reached the map is simply left blank.
+* **Fronts (objective), experimental.** Computed in `rtma_viewer/objective.py` from the analysis alone, after Hewson's (1998)
+  objective method: the surface equivalent potential temperature (Bolton 1980) is smoothed over about 60 km, and a front is placed
+  where its gradient is a maximum along the gradient direction. Lines are kept where the gradient exceeds 10 K per 100 km, over
+  at least 300 km, below 1,000 m terrain, away from coasts and the shores of the Great Lakes (land-water contrast produces a
+  permanent thermal gradient there), and are typed by the wind component across them: toward the warm side is a cold front,
+  toward the cold side a warm front, nearly parallel is stationary. H and L are closed extrema of the smoothed MSLP at least
+  1.5 mb deeper than a ring 200 km away. **This is not equivalent to a WPC analysis.** It sees only the surface, has no memory
+  of earlier analyses, and cannot identify occlusions, troughs or dry lines; a front may break into pieces, and fronts that run
+  along a coast (coastal fronts) are exactly what it removes. Tuned by eye against WPC analyses of a quiet pattern and a front;
+  the thresholds are constants at the top of the module.
 
 ### Surface kinematics (derived)
 
