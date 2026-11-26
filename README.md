@@ -1,6 +1,6 @@
 # New England RTMA / URMA viewer
 
-Hourly maps of **41 variables** from NOAA's **RTMA** and **URMA** (2.5 km), each as the current field plus
+Hourly maps of **46 variables** from NOAA's **RTMA** and **URMA** (2.5 km), each as the current field plus
 **1 / 3 / 6 / 12 / 24-hour change** where a change is meaningful, published as a static dashboard on GitHub Pages:
 
 * **Basics:** temperature, dew point, apparent temperature, wind speed / gust / **direction**, **surface pressure**,
@@ -13,7 +13,7 @@ Hourly maps of **41 variables** from NOAA's **RTMA** and **URMA** (2.5 km), each
 * **Surface kinematics:** **temperature and dew point advection**, **convergence**, **vorticity**, **frontogenesis** and
   **terrain-forced (upslope) lift** from the 10 m wind.
 * **Precipitation (analysis, not forecast):** **1 / 3 / 6 / 12 / 24 / 48-hour liquid-equivalent precipitation** from NOAA's hourly
-  precipitation analyses, and a rough **24-hour frozen precipitation** (the part that fell while the surface wet bulb was at or below 32 F).
+  precipitation analyses, and **1 / 3 / 6 / 12 / 24 / 48-hour frozen precipitation** (liquid equivalent of snow, sleet and freezing rain together: the part that fell while the surface wet bulb was at or below 32 F; no snow-to-liquid ratio is applied).
 
 Everything - fetching, decoding, plotting, site generation - is Python; the page itself is plain HTML + a little JS.
 
@@ -70,14 +70,16 @@ field caches and deletes the rest.
   terrain (static) once per product.
 * A normal run downloads the newest cycle only: about **70 MB per product** plus the precipitation refresh (3 files, ~2 MB for RTMA;
   24 files, ~19 MB for URMA), ~165 MB per hourly run in all, because every earlier hour was once the newest and is already in the cache.
-  A cold start (or cache eviction) fetches 25 cycles of five variables and 48 precipitation files: **~840 MB per product**
-  (measured: 88 s for URMA on a fast link). The build log prints
+  A cold start (or cache eviction) fetches 49 cycles of temperature, dew point and pressure (needed for the 48-hour frozen
+  product), 25 of wind and gust, and 48 precipitation files: roughly **1.3 GB per product** (estimated, not measured; the earlier
+  25-hour design measured ~840 MB / 88 s for URMA). The build log prints
   real bytes and request counts for each product. If a few hourly analyses are missing the 24-hour temperature summaries still draw (at
-  least 19 of 25 are needed; hours below freezing is rescaled to the full period). **Precipitation totals are stricter**: a total with any
-  hour missing would read low without saying so, so it is left blank instead (`Variable.min_series_fraction = 1.0`).
+  least 19 of 25 are needed; hours below freezing is rescaled to the full period). **Precipitation and frozen-precipitation totals use
+  whatever hours exist**: a missing hourly file simply adds nothing (in a cell, a missing hour is skipped), so the total can read low. The map
+  header then says "(N of M h available)" and the page shows a warning; a total with no usable hour is left blank.
 * Cache precision: temperature-like fields are float16 (<= 0.06 units), but float16 would quantise ~1000 mb pressure to 0.5-1 mb,
   so pressure is cached as packed uint16 at 0.01 mb (same 2 bytes per cell), and the wind components (which are differentiated) at
-  0.002 m/s. Variables that only need the newest cycle are pruned to one file. Hourly precipitation is packed as uint16 at 0.0005 in (an hour of more than 32 in would saturate; none ever has). The field cache is about 125 MB per product.
+  0.002 m/s. Variables that only need the newest cycle are pruned to one file. Hourly precipitation is packed as uint16 at 0.0005 in (an hour of more than 32 in would saturate; none ever has). The field cache is about 125-175 MB per product (173 MB measured for URMA with 49-hour inputs).
 * RTMA is published ~35-45 min after the hour; URMA a few hours later. The build looks back up to
   6 h (RTMA) / 12 h (URMA) for the newest published cycle, so the page always shows the latest
   available analysis and states its valid time and lag.
@@ -170,8 +172,8 @@ as KMWN reads the analysis at the grid's terrain height, not at 1917 m.)
 | **Frontogenesis** | derived: sea-level T, `UGRD` `VGRD` | no | Petterssen 2-D kinematic, F per 100 km per 3 h |
 | **Upslope lift** | derived: `UGRD` `VGRD`, terrain | no | V . grad(z), cm/s; positive = blowing uphill |
 | **1 h precipitation** | `pcp` file (RTMA: MRMS radar-only; URMA: Stage IV) | no | inches of water in the hour ending at the valid time; station labels only where >= 0.01 in |
-| **3 / 6 / 12 / 24 / 48 h precipitation** | derived: sums of the hourly files | no | blank where any of the hours is missing; one shared colour ramp (0.01 ... 10 in) for every period |
-| **24 h frozen precipitation** | derived: hourly precipitation, T, Td, surface pressure | no | liquid equivalent that fell while the mean of the start- and end-of-hour wet bulb was <= 32 F; a rough guide (see below) |
+| **3 / 6 / 12 / 24 / 48 h precipitation** | derived: sums of the hourly files | no | missing hours add nothing and the map says "N of M h available"; NWS Boston/Taunton total-precipitation ramp (0.01 ... 50 in) |
+| **1 / 3 / 6 / 12 / 24 / 48 h frozen precipitation** | derived: hourly precipitation, T, Td, surface pressure | no | liquid equivalent (inches of water) that fell while the mean of the start- and end-of-hour wet bulb was <= 32 F; same bins as the precipitation maps in a cool blue-purple ramp (ColorBrewer BuPu); a rough guide (see below) |
 | **Terrain height** | `HGT` (static) | no | the analysis grid's smoothed terrain, in feet |
 
 Current-only variables (no change maps) have 1 / 3 / 6 / 12 / 24-hour buttons greyed out; switching to one from a change map falls back
@@ -186,8 +188,8 @@ to the current field. Every variable has a short "how to read this" note on the 
 * Checked on a real storm (22-23 Nov 2026, URMA): the sum of six hourly files agrees with NOAA's own 6-hour URMA file with a correlation of
   0.998 and a mean difference of -0.002 in (the two are separate mosaics, so exact agreement is not expected).
 * **Frozen precipitation** counts each hour's liquid equivalent when the wet bulb averaged over that hour (start and end) was at or below
-  32 F. It says nothing about the air aloft (freezing rain, or rain falling through a cold surface layer, counts), melting, or snow-to-liquid
-  ratios (10:1 is the textbook average; colder, drier snow is fluffier). Treat it as a guide to where the water fell cold.
+  32 F. It is water, not snow depth (no snow-to-liquid ratio), it lumps snow, sleet and freezing rain together, and it says nothing about the
+  air aloft (rain falling through a cold surface layer counts; melting is ignored). Treat it as a guide to where the water fell cold.
 
 ### Mean sea-level pressure (derived)
 
