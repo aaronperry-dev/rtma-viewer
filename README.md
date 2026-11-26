@@ -20,7 +20,7 @@ rtma_viewer/
   s3.py          anonymous S3 access, .idx parsing, one HTTP byte-range request per GRIB message
   grib.py        eccodes decode straight from memory, New England window of the CONUS grid
   fields.py      fetch -> decode -> window -> compact cache (float16 / packed uint16 / static float32; each hour only the newest cycle is downloaded)
-  colors.py      fixed-level colour ramps (NWS wind / wind chill / heat index legends; WPC-style ramp for changes)
+  colors.py      fixed-level colour ramps (WPC max/min temperature legend; NWS wind / wind chill / heat index and NDFD departure legends; WPC-style ramp for other changes)
   derived.py     wind chill, heat index, apparent temperature, wet bulb, MSLP, RH (liquid / ice), mixing ratio, sea-level temperature,
                  flight category, frostbite zones, 24-hour max / min / hours-below-freezing / crossings, calm-masked wind direction
   kinematics.py  grid geometry + advection, convergence, vorticity, frontogenesis, terrain lift, pressure gradient
@@ -97,19 +97,25 @@ as KMWN reads the analysis at the grid's terrain height, not at 1917 m.)
 ## Colour ramps
 
 * Fixed physical levels (same colours for the same value in every frame/product).
-* Temperature: the classic -40..120 F operational ramp (magenta -> purple -> blue | green at 32 F ->
-  yellow -> orange -> red -> pink), 1 F bins. Dew point: a sequential ramp, monotone in lightness.
+* **Temperature, dew point, wet bulb, sea-level temperature, 24 h max / min temperature**: one shared legend, the WPC max / min
+  temperature forecast ramp (sampled from the WPC Day 3 max / Day 4 min maps): 5 F bins from -40 to 100 F plus an under and an
+  over colour (pink below -40, white -35..-30, light blue 25-30, teal 30-35, green 45-65, pale yellow 70-75, orange 85-95, red above 100).
+  The bins are 5 F wide, so 32 F is not a colour break (30-35 F is one teal).
 * **Wind speed and wind gust**: the NWS "Maximum Wind Gust" legend (sampled from an NWS Gray/Portland map) -
   17 whole-number bins (0-5, 5-10 ... 50-60, 60-70, 70-80, 80-100, 100-120, 120-140, 140-150 mph) with an equal-width legend.
 * **Apparent temperature**: the NWS "24-Hour Minimum Wind Chill Index Temperature" legend (< -60 ... 35+, 5 F bins)
   joined to the NWS "24-Hour Maximum Heat Index Temperature" legend (75 ... 120+, 5 F bins).  Neither legend covers
   35-75 F (wind chill is one flat colour from 35 F up; heat index is a single grey below 75 F), so that span is a
   smooth OKLab bridge from the wind-chill teal to the first heat-index yellow.
-* **New variables**: wet bulb reuses the temperature ramp; relative humidity, dew point depression, cloud cover, surface pressure and terrain
+* **New variables**: wet bulb uses the temperature ramp; relative humidity, dew point depression, cloud cover, surface pressure and terrain
   have sequential ramps; MSLP is diverging about ~1013 mb (2 mb bins); wind direction is a cyclic 16-point compass; visibility and
   ceiling use aviation-style category breaks (every bin edge is a flight-category boundary). A value exactly on the top level (RH or cloud
   cover of 100 %, direction 360) takes the top colour rather than becoming transparent.
-* Changes (every variable that has them, all intervals): the WPC-style change ramp - white for -1..+1, blues for cooling,
+* **Temperature-type changes** (temperature, dew point, wet bulb, apparent temperature, dew point depression; all intervals): the NWS
+  NDFD "departure from climatology" legend - white for -1..+1, yellow -> orange -> red -> pink -> magenta for warming, green -> cyan ->
+  blue -> violet for cooling, whole-number levels (1, 2, 3, 4, 6, 8, 10, 12, 15, 18, 22, 26, 30) and an equal-width legend;
+  magenta beyond +-30 F. The same levels for 1/3/6/12/24 h.
+* Every other change map (wind, gust, pressure, humidity ...): the WPC-style change ramp - white for -1..+1, blues for cooling,
   peach -> orange -> red -> maroon -> magenta for warming - with the original whole-number levels (1, 3, 5, 8, 12,
   16, 20, 25, 30, 35, 40, 50) and an equal-width legend. The levels are the same for 1/3/6/12/24 h. Pressure and MSLP use the same
   25 colours on finer levels (+-0.5, 1, 2, 3, 4, 6, 9, 12, 16, 20, 24, 30 mb) because pressure changes are an order of magnitude smaller.
@@ -121,7 +127,7 @@ as KMWN reads the analysis at the grid's terrain height, not at 1917 m.)
 |---|---|---|---|
 | Temperature, dew point | `TMP`, `DPT` 2 m | yes | |
 | Apparent temperature | derived: T, Td, wind | yes | see below |
-| **Wet bulb** | derived: T, Td, surface pressure | yes | thermodynamic wet bulb (liquid water); same legend as temperature, so the 32 F break lines up |
+| **Wet bulb** | derived: T, Td, surface pressure | yes | thermodynamic wet bulb (liquid water); same legend as temperature (5 F bins, so 30-35 F is a single colour) |
 | **Relative humidity** | derived: T, Td | yes | with respect to liquid water, 0-100 % |
 | **Dew point depression** | derived: T - Td | yes | near 0 = saturated (fog, low cloud, rime) |
 | **Sea-level temperature** | derived: T, terrain | no | T + 3.57 F per 1,000 ft (6.5 K/km); temperature legend; removes elevation so cold pools / air-mass edges show |
