@@ -110,6 +110,30 @@ TERRAIN_FT = Ramp([
 ])
 _SEA = "#bcd9ea"
 
+# 24-hour temperature range, °F: grey-green (little change) -> straw -> orange -> brick (big radiational swing)
+RANGE_F = Ramp([(0, "#f3f1e8"), (10, "#cfe3c0"), (20, "#e8d78a"), (30, "#e3a24f"), (40, "#a8412d")])
+
+# Hours at or below freezing in 24 h: warm cream (none) -> pale blue -> blue -> deep indigo (frozen all day)
+FREEZE_HOURS = Ramp([(0, "#f6f1e4"), (6, "#bfe0ea"), (12, "#58a6d6"), (18, "#2d5fb0"), (24, "#2b1d70")])
+
+# Number of freezing-point crossings in 24 h
+CROSSINGS = Ramp([(0, "#f6f1e4"), (1, "#f4dc9a"), (2, "#ec9a4f"), (4, "#c4412f"), (8, "#6e1a4e")])
+
+# Relative humidity with respect to ice, %: the RH ramp up to 100, then a hard break to violet for ice-supersaturated air
+RH_ICE_PCT = Ramp([(0, "#7f3b08"), (20, "#d29a52"), (40, "#f0e0ae"), (55, "#cfe6bf"), (70, "#8dccb0"), (85, "#3a9fb8"),
+                   (99.9, "#1f4e9c"), (100.1, "#c46adb"), (120, "#8a2fb0"), (140, "#3d0a63")])
+
+# Water-vapour mixing ratio, g/kg: dry sand -> green -> teal -> blue -> violet (same family as the dew point ramp)
+MIXING_G_KG = Ramp([(0, "#f4ead0"), (1, "#d7dca0"), (2, "#9ccf9c"), (4, "#4fb0a8"), (7, "#2a82b3"), (10, "#3d44a0"),
+                    (16, "#2f0f52")])
+
+# Pressure-gradient magnitude, mb / 100 km: near-white (slack) -> blue -> violet -> red (tight)
+PGRAD_MB = Ramp([(0, "#f7f7f7"), (1, "#a8d3e6"), (2, "#4a90c9"), (3, "#7b4fb0"), (4, "#d6403a"), (5, "#6e0d1a")])
+
+# Signed diagnostics (advection, convergence, vorticity, frontogenesis, terrain lift): blue negative, white about zero, warm positive
+_DIV_RAMP = Ramp([(-1, "#0a2f8c"), (-0.75, "#2f6fe0"), (-0.4, "#8db7ff"), (-0.12, "#dbe8ff"), (0, "#ffffff"),
+                  (0.12, "#ffe6cf"), (0.4, "#fdae6b"), (0.75, "#e0442c"), (1, "#7a0a2a")])
+
 # --------------------------------------------------------------------------- NWS legends (sampled from NWS Gray/Portland maps)
 # Wind speed / gust (mph): NWS "Maximum Wind Gust" legend.  Edges are the whole-number bin starts of the legend labels
 # (0-5, 6-10, 11-15, ... 81-100, 101-120, 121-140, 141-150).  Same colours for sustained wind and gusts.
@@ -258,6 +282,44 @@ def direction_style() -> Style:
                    uniform=False, tick_labels=_COMPASS)
 
 
+def diverging_style(levels) -> Style:
+    """Signed field on uneven, symmetric levels (an even number of them: the bin straddling zero is white).  Colours step
+    evenly along the diverging ramp, one per bin, so the legend is a row of equal blocks."""
+    levels = np.asarray(levels, float)
+    assert len(levels) % 2 == 0 and np.allclose(levels, -levels[::-1]), "need symmetric levels with an even count"
+    cols = _DIV_RAMP(np.linspace(-1, 1, len(levels) + 1))
+    return Style(levels.copy(), cols, "both", levels.copy(), signed=True, uniform=True, tick_fontsize=10.5)
+
+
+def categorical_style(hex_colors, labels) -> Style:
+    """Integer-coded classes 0..n-1: one block per class, labelled in the legend."""
+    n = len(hex_colors)
+    return _custom(np.arange(n + 1) - 0.5, hex_colors, "neither", ticks=np.arange(n), tick_fontsize=11,
+                   tick_labels={i: t for i, t in enumerate(labels)})
+
+
+def flight_category_style() -> Style:
+    return categorical_style(["#c43bc4", "#e63946", "#3a6fe0", "#4cb86b"], ["LIFR", "IFR", "MVFR", "VFR"])
+
+
+def frostbite_style() -> Style:
+    return categorical_style(["#e7edf2", "#9ecbea", "#3c7fcf", "#6a1b9a"], ["None", "30 min", "10 min", "5 min"])
+
+
+def crossings_style() -> Style:
+    """Integer counts 0..8+ with the tick under the middle of each block."""
+    st = sequential_style(CROSSINGS, -0.5, 8.5, 1, 1, "max")
+    st.ticks = np.arange(0, 9, dtype=float)
+    return st
+
+
+def mixing_ratio_style() -> Style:
+    levels = [0, 0.25, 0.5, 0.75, 1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10, 12, 16]
+    centers = np.array(levels[:-1]) + np.diff(levels) / 2
+    cols = [to_hex(c) for c in MIXING_G_KG(centers)] + [to_hex(MIXING_G_KG(16.0)[0])]
+    return _custom(levels, cols, "max", ticks=[0, 0.5, 1, 2, 3, 4, 6, 8, 12, 16], tick_fontsize=10.5)
+
+
 _ABS = {
     "temp": lambda: sequential_style(TEMP_F, -40, 120, 1, 10, "both"),
     "dewpoint": lambda: sequential_style(DEWPOINT_F, -20, 86, 1, 10, "both"),
@@ -274,6 +336,26 @@ _ABS = {
     "ceiling": ceiling_style,
     "cloud": lambda: sequential_style(CLOUD_PCT, 0, 100, 5, 10, "neither"),
     "terrain": terrain_style,
+    # derived winter diagnostics
+    "slt": lambda: sequential_style(TEMP_F, -40, 120, 1, 10, "both"),       # same legend as 2 m temperature
+    "rhi": lambda: sequential_style(RH_ICE_PCT, 0, 140, 2, 20, "max"),
+    "mixr": mixing_ratio_style,
+    "tmax24": lambda: sequential_style(TEMP_F, -40, 120, 1, 10, "both"),
+    "tmin24": lambda: sequential_style(TEMP_F, -40, 120, 1, 10, "both"),
+    "trange24": lambda: sequential_style(RANGE_F, 0, 45, 1, 5, "max"),
+    "frzhrs24": lambda: sequential_style(FREEZE_HOURS, 0, 24, 1, 3, "neither"),
+    "ftx24": crossings_style,
+    "wcmin24": apparent_style,                                              # NWS "24-Hour Minimum Wind Chill" legend
+    "gustmax24": wind_style,
+    "frostbite": frostbite_style,
+    "pgrad": lambda: sequential_style(PGRAD_MB, 0, 5, 0.25, 1, "max"),
+    "fltcat": flight_category_style,
+    "tadv": lambda: diverging_style([-30, -20, -12, -8, -5, -3, -1, 1, 3, 5, 8, 12, 20, 30]),
+    "dadv": lambda: diverging_style([-30, -20, -12, -8, -5, -3, -1, 1, 3, 5, 8, 12, 20, 30]),
+    "conv": lambda: diverging_style([-80, -50, -30, -20, -12, -6, -3, 3, 6, 12, 20, 30, 50, 80]),
+    "vort": lambda: diverging_style([-80, -50, -30, -20, -12, -6, -3, 3, 6, 12, 20, 30, 50, 80]),
+    "fgen": lambda: diverging_style([-40, -25, -15, -8, -4, -2, 2, 4, 8, 15, 25, 40]),
+    "upslope": lambda: diverging_style([-150, -100, -60, -40, -25, -15, -8, -3, 3, 8, 15, 25, 40, 60, 100, 150]),
 }
 
 def style_for(var_key: str, interval: int) -> Style:

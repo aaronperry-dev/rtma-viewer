@@ -14,13 +14,28 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import numpy as np
+
 from . import boundaries, render
 from .config import FT_PER_M, INTERVALS, PANEL_VARIABLES, PRODUCTS, SOURCE_VARIABLES, VARIABLES, hours_needed, panel_hours
 from .fields import FieldStore
+from .kinematics import Geometry
 
 log = logging.getLogger("rtma_viewer")
 SITE_DIR = Path(__file__).resolve().parent.parent / "site"
 iso = lambda t: t.strftime("%Y-%m-%dT%H:%M:%SZ")
+MIN_SERIES_FRACTION = 0.75       # a 24-hour summary needs at least this share of its hourly analyses (19 of 25)
+
+
+def series_inputs(fields: dict, var, valid: datetime):
+    """Stacks (hours + 1, ny, nx) of each input over the ``var.series`` hours up to ``valid`` (index 0 = valid time), with NaN
+    planes for hours that are missing for *any* input.  None if too few hours are available."""
+    cols = [[fields.get((valid - timedelta(hours=i), k)) for i in range(var.series + 1)] for k in var.requires]
+    ok = [all(c[i] is not None for c in cols) for i in range(var.series + 1)]
+    if sum(ok) < MIN_SERIES_FRACTION * (var.series + 1) or not ok[0]:
+        return None
+    blank = np.full(next(c[0] for c in cols).shape, np.nan, np.float32)
+    return [np.stack([c[i] if ok[i] else blank for i in range(len(ok))]) for c in cols]
 
 
 def build_product(product, client, now, out: Path, cache: Path, layers, dpi: int, colors: int) -> dict:
@@ -35,19 +50,24 @@ def build_product(product, client, now, out: Path, cache: Path, layers, dpi: int
     log.info("%s: newest cycle %s", product.key, cycle)
 
     need = hours_needed()                                 # only the cycles each variable's panels (and derived inputs) use
-    jobs = [(cycle - timedelta(hours=h), SOURCE_VARIABLES[k]) for k, hrs in need.items() for h in hrs]
+    jobs = sorted(((cycle - timedelta(hours=h), SOURCE_VARIABLES[k]) for k, hrs in need.items() for h in hrs),
+                  key=lambda j: j[0], reverse=True)       # newest cycle first: one GRIB inventory read serves all its variables
     fields = store.load(jobs)
     for var in SOURCE_VARIABLES.values():                 # static fields (terrain) are valid at every time
         if var.static:
             for h in INTERVALS:
                 fields[(cycle - timedelta(hours=h), var.key)] = fields.get((cycle, var.key))
-    for var in VARIABLES.values():                        # derived variables, computed from the cached fields
+    geom = Geometry.from_latlon(store.grid.lat, store.grid.lon) if store.grid is not None else None
+    for var in VARIABLES.values():                        # derived variables (in dependency order), from the cached fields
         if var.derive is None:
             continue
         for h in panel_hours(var):
             t = cycle - timedelta(hours=h)
-            parts = [fields.get((t, k)) for k in var.requires]
-            fields[(t, var.key)] = None if any(a is None for a in parts) else var.derive(*parts)
+            parts = series_inputs(fields, var, t) if var.series else [fields.get((t, k)) for k in var.requires]
+            if parts is None or any(a is None for a in parts):
+                fields[(t, var.key)] = None
+                continue
+            fields[(t, var.key)] = var.derive(*parts, geom=geom) if var.needs_geom else var.derive(*parts)
     ctx = render.MapContext.build(store.grid, layers)
 
     total_png = 0
@@ -72,7 +92,7 @@ def build_product(product, client, now, out: Path, cache: Path, layers, dpi: int
             style, signed = render.style_and_flags(var, h)
             texts = render.panel_text(product, var, h, cycle, ref_t if h else None)
             rel = f"img/{product.key}_{var.key}_{h}h.png"
-            stats = render.region_stats(ctx, data, circular=var.circular)
+            stats = render.region_stats(ctx, data, circular=var.circular, categories=var.categories)
             size = render.render_panel(ctx, data, style, texts=texts, signed=signed, out=out / rel,
                                        dpi=dpi, colors=colors, var=var, skip_labels=skip)
             total_png += size
@@ -123,7 +143,8 @@ def main(argv=None) -> int:
     manifest = {"generated": iso(now), "version": int(now.timestamp()), "demo": args.demo,
                 "intervals": list(INTERVALS),
                 "variables": [{"key": v.key, "label": v.label, "long_name": v.long_name, "unit": v.unit,
-                               "group": v.group, "note": v.note, "circular": v.circular}
+                               "group": v.group, "note": v.note, "circular": v.circular, "diverging": v.diverging,
+                               "categories": list(v.categories), "digits": v.stat_decimals}
                               for v in PANEL_VARIABLES.values()],
                 "products": {}}
     for key in args.products.split(","):

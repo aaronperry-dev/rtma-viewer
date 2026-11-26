@@ -28,6 +28,7 @@ from . import stations as stn
 from .colors import Style, style_for
 from .config import DISPLAY_BBOX, Product, Variable
 from .grib import Grid
+from .kinematics import smooth     # noqa: F401  (re-exported: the isobars use it too)
 
 log = logging.getLogger(__name__)
 
@@ -103,10 +104,13 @@ class MapContext:
         return cls(grid, x, y, land, labels, layers)
 
 
-def region_stats(ctx: MapContext, field: np.ndarray, circular: bool = False) -> dict:
+def region_stats(ctx: MapContext, field: np.ndarray, circular: bool = False, categories: tuple = ()) -> dict:
     v = field[ctx.land & np.isfinite(field)]
     if v.size == 0:
         return {"min": None, "mean": None, "max": None}
+    if categories:                    # integer classes: min / mean / max mean nothing, report each class's share of the land area
+        counts = np.bincount(np.clip(np.rint(v).astype(int), 0, len(categories) - 1), minlength=len(categories))
+        return {"min": None, "mean": None, "max": None, "shares": [round(float(c) / v.size * 100.0, 1) for c in counts]}
     if circular:                      # angles: min/max are meaningless; report the vector-mean direction
         r = np.radians(v.astype(np.float64))
         mean = float(np.degrees(np.arctan2(np.sin(r).mean(), np.cos(r).mean())) % 360.0)
@@ -123,6 +127,7 @@ def label_text(var: Variable | None, v: float, signed: bool) -> str:
     """Text printed at a station: whole numbers by default, per-variable decimals / custom text for current fields."""
     if var is not None and var.labeler is not None and not signed:
         return var.labeler(float(v))
+    signed = signed or (var is not None and var.diverging)
     d = 0
     if var is not None:
         d = var.decimals if not signed or var.chg_decimals is None else var.chg_decimals
@@ -130,26 +135,6 @@ def label_text(var: Variable | None, v: float, signed: bool) -> str:
     if q == 0:
         return "0" if d == 0 else f"{0:.{d}f}"
     return f"{q:+.{d}f}" if signed else f"{q:.{d}f}"
-
-
-def smooth(a: np.ndarray, sigma: float) -> np.ndarray:
-    """NaN-aware separable Gaussian smoothing (sigma in grid cells), no SciPy needed."""
-    r = max(1, int(round(3 * sigma)))
-    k = np.exp(-0.5 * (np.arange(-r, r + 1) / sigma) ** 2)
-    k /= k.sum()
-    w = np.isfinite(a).astype(np.float64)
-    v = np.where(w > 0, a, 0.0).astype(np.float64)
-
-    def conv(m, axis):
-        pad = [(0, 0), (0, 0)]
-        pad[axis] = (r, r)
-        m = np.pad(m, pad, mode="edge")
-        return np.apply_along_axis(lambda x: np.convolve(x, k, mode="valid"), axis, m)
-
-    num, den = conv(conv(v, 0), 1), conv(conv(w, 0), 1)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        out = num / den
-    return np.where(w > 0, out, np.nan)
 
 
 ISOBAR_SIGMA_CELLS = 5.0        # ~12 km: removes the terrain-scale noise of the sea-level reduction, keeps fronts / troughs
@@ -214,6 +199,8 @@ def render_panel(ctx: MapContext, field: np.ndarray, style: Style, *, texts: tup
         if not np.isfinite(v) or (skip_labels is not None and skip_labels[r, c]):
             continue
         txt = label_text(var, v, signed)
+        if not txt:                                           # e.g. "no frostbite risk" stations stay unlabelled
+            continue
         ax.annotate(txt, (px, py), xytext=(0, 1.5 if SHOW_STATION_IDS else 0), textcoords="offset points",
                     fontsize=7.4, fontweight="bold", color="black", ha="center", va="center", zorder=8,
                     path_effects=halo(2.4), annotation_clip=False)
@@ -289,8 +276,11 @@ def panel_text(product: Product, var: Variable, interval: int, valid: datetime, 
     """(left bold, left regular, right bold, right regular) - e.g. 'RTMA' ': 2m Temperature (°F)' 'Valid' ': 17:00z Thu Nov 5 2026'."""
     chg = f" {interval}-hr Change" if interval else ""
     right = f": {_z(valid)} {valid.year}" + (f"  (vs {_z(ref)})" if ref else "")
-    return product.label, f": {var.long_name}{chg} ({var.unit})", "Valid", right
+    if var.series:                                            # period products: say what window they summarise
+        right += f"  (past {var.series} h)"
+    unit = f" ({var.unit})" if var.unit else ""
+    return product.label, f": {var.long_name}{chg}{unit}", "Valid", right
 
 
 def style_and_flags(var: Variable, interval: int):
-    return style_for(var.key, interval), interval > 0
+    return style_for(var.key, interval), interval > 0 or var.diverging

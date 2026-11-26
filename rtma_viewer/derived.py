@@ -107,6 +107,35 @@ _EPS = 0.62198              # Rd / Rv
 _CPD, _CPV = 1005.7, 1875.0  # J kg-1 K-1: dry air, water vapour
 
 
+def sat_vapor_pressure_ice(t_c):
+    """Saturation vapour pressure over ice (hPa), Alduchov-Eskridge constants (1.032 hPa at -20 C, 0.128 hPa at -40 C)."""
+    t = np.asarray(t_c, np.float64)
+    return 6.1121 * np.exp(22.587 * t / (273.86 + t))
+
+
+def relative_humidity_ice(t_f, td_f):
+    """Relative humidity (%) with respect to *ice* below freezing and with respect to liquid water at or above 0 C.
+
+    The vapour pressure comes from the (liquid-referenced) dew point, as published, so air that is exactly saturated
+    over water reads ~110 % at 15 F and ~140 % at -30 F: supersaturated with respect to ice, which is where frost, rime
+    and ice-crystal growth happen.  Not clipped at 100 %.
+    """
+    t = _f_to_c(t_f)
+    td = np.minimum(_f_to_c(td_f), t)
+    e = sat_vapor_pressure(td)
+    es = np.where(t < 0.0, sat_vapor_pressure_ice(t), sat_vapor_pressure(t))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(np.isfinite(t) & np.isfinite(td), 100.0 * e / es, np.nan).astype(np.float32)
+
+
+def mixing_ratio(td_f, p_mb):
+    """Water-vapour mixing ratio (g/kg) from the 2 m dew point (°F) and station pressure (mb)."""
+    e = sat_vapor_pressure(_f_to_c(td_f))
+    p = np.asarray(p_mb, np.float64)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(np.isfinite(e) & np.isfinite(p), 1000.0 * _EPS * e / (p - e), np.nan).astype(np.float32)
+
+
 def wet_bulb(t_f, td_f, p_mb, iterations: int = 26):
     """Thermodynamic wet-bulb temperature (°F) from 2 m temperature, 2 m dew point (°F) and *station* pressure (mb).
 
@@ -184,3 +213,104 @@ def wind_direction(dir_deg, wind_mph):
     d = np.asarray(dir_deg, np.float64)
     v = np.asarray(wind_mph, np.float64)
     return np.where(np.isfinite(d) & np.isfinite(v) & (v >= CALM_MPH), d, np.nan).astype(np.float32)
+
+
+# ---------------------------------------------------------------------------------------------------- terrain-adjusted
+SLT_LAPSE_F_PER_FT = 1.8 * STD_LAPSE / FT_PER_M         # 6.5 K/km = 3.57 F per 1000 ft
+DEWPOINT_LAPSE_F_PER_FT = 1.8 * 0.0018 / FT_PER_M       # dew point falls ~1.8 K/km in well-mixed air = 0.99 F per 1000 ft
+
+
+def sea_level_temperature(t_f, terrain_ft):
+    """2 m temperature (°F) reduced to sea level with a 6.5 K/km lapse rate: removes the terrain signal so air-mass
+    contrasts, cold pools and inversions stand out."""
+    z = np.maximum(np.asarray(terrain_ft, np.float64), 0.0)
+    return (np.asarray(t_f, np.float64) + SLT_LAPSE_F_PER_FT * z).astype(np.float32)
+
+
+def sea_level_dewpoint(td_f, terrain_ft):
+    """2 m dew point (°F) reduced to sea level with a 1.8 K/km lapse rate (used for moisture advection)."""
+    z = np.maximum(np.asarray(terrain_ft, np.float64), 0.0)
+    return (np.asarray(td_f, np.float64) + DEWPOINT_LAPSE_F_PER_FT * z).astype(np.float32)
+
+
+# ---------------------------------------------------------------------------------------------------- winter hazards
+# Approximate NWS wind-chill-chart frostbite zones (wind chill, °F).  The chart's shading is not a single wind-chill
+# contour - its edges move a few degrees with wind speed - so these are round mid-chart values.
+FROSTBITE_WC_F = (-18.0, -33.0, -48.0)       # 30 min, 10 min, 5 min
+
+
+def frostbite_category(t_f, wind_mph):
+    """0 = no frostbite concern, 1 = frostbite in ~30 min, 2 = ~10 min, 3 = ~5 min (exposed skin), from NWS wind chill."""
+    t = np.asarray(t_f, np.float64)
+    v = np.asarray(wind_mph, np.float64)
+    wc = np.where((t <= WC_MAX_T_F) & (v > WC_MIN_WIND_MPH), wind_chill(t, v), t)
+    cat = (wc <= FROSTBITE_WC_F[0]).astype(np.float32) + (wc <= FROSTBITE_WC_F[1]) + (wc <= FROSTBITE_WC_F[2])
+    return np.where(np.isfinite(wc), cat, np.nan).astype(np.float32)
+
+
+FLIGHT_CATEGORIES = ("LIFR", "IFR", "MVFR", "VFR")
+
+
+def flight_category(vis_mi, ceiling_ft):
+    """FAA / NWS flight category from visibility (statute miles) and ceiling (ft AGL): the worse of the two.
+
+    0 LIFR  ceiling < 500 ft and/or visibility < 1 mi        2 MVFR  ceiling 1000-3000 ft and/or visibility 3-5 mi
+    1 IFR   ceiling 500-999 ft and/or visibility 1 - <3 mi    3 VFR   ceiling > 3000 ft and visibility > 5 mi
+    """
+    vis = np.asarray(vis_mi, np.float64)
+    ceil = np.asarray(ceiling_ft, np.float64)
+    cat = np.full(vis.shape, 3.0)
+    cat = np.where((ceil <= 3000.0) | (vis <= 5.0), 2.0, cat)
+    cat = np.where((ceil < 1000.0) | (vis < 3.0), 1.0, cat)
+    cat = np.where((ceil < 500.0) | (vis < 1.0), 0.0, cat)
+    return np.where(np.isfinite(vis) & np.isfinite(ceil), cat, np.nan).astype(np.float32)
+
+
+# ---------------------------------------------------------------------------------------------------- 24-hour summaries
+# Inputs are stacks (n_hours + 1, ny, nx) of hourly analyses, index 0 = the valid time, NaN planes for missing hours.
+def series_max(stack):
+    return np.fmax.reduce(np.asarray(stack, np.float32), axis=0)
+
+
+def series_min(stack):
+    return np.fmin.reduce(np.asarray(stack, np.float32), axis=0)
+
+
+def series_range(stack):
+    return (series_max(stack) - series_min(stack)).astype(np.float32)
+
+
+def _below_and_crossing(stack, threshold):
+    a = np.asarray(stack[:-1], np.float64) - threshold
+    b = np.asarray(stack[1:], np.float64) - threshold
+    valid = np.isfinite(a) & np.isfinite(b)
+    cross = ((a <= 0.0) & (b > 0.0)) | ((a > 0.0) & (b <= 0.0))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        part = np.where(a <= 0.0, -a / (b - a), -b / (a - b))        # share of the hour spent at or below the threshold
+    below = np.where(cross, part, ((a <= 0.0) & (b <= 0.0)).astype(float))
+    return below, cross, valid
+
+
+def hours_at_or_below(stack, threshold: float = 32.0):
+    """Hours at or below ``threshold`` over the series, interpolating linearly between hourly analyses.  If some
+    hourly analyses are missing the total is scaled to the full period."""
+    below, _, valid = _below_and_crossing(stack, threshold)
+    n = valid.sum(0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        out = np.where(n > 0, (below * valid).sum(0) * (len(stack) - 1) / n, np.nan)
+    return out.astype(np.float32)
+
+
+def threshold_crossings(stack, threshold: float = 32.0):
+    """How many times the series crossed ``threshold`` (in either direction)."""
+    _, cross, valid = _below_and_crossing(stack, threshold)
+    n = valid.sum(0)
+    return np.where(n > 0, (cross & valid).sum(0), np.nan).astype(np.float32)
+
+
+def min_wind_chill(t_stack, wind_stack):
+    """Lowest hourly wind chill (°F) in the series; the air temperature where wind chill is not defined."""
+    t = np.asarray(t_stack, np.float64)
+    v = np.asarray(wind_stack, np.float64)
+    wc = np.where((t <= WC_MAX_T_F) & (v > WC_MIN_WIND_MPH), wind_chill(t, v), t)
+    return np.fmin.reduce(wc, axis=0).astype(np.float32)

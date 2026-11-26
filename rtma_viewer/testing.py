@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import re
+import threading
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 
@@ -64,6 +65,12 @@ class DemoGrid:
         warm = (1 + np.tanh(s)) / 2
         return 1006 + 14 * (1 - warm) - 3 * np.exp(-s ** 2 / 2) + 0.8 * self.n[1] + 0.004 * self.ykm
 
+    def to_grid_relative(self, u_east, v_north):
+        """Rotate east / north components into the components along the grid's x / y axes."""
+        phi, lam = np.radians(self.lat), np.radians(self.lon)
+        a = np.arctan2(np.gradient(phi, axis=1), np.cos(phi) * np.gradient(lam, axis=1))   # angle of +x ccw from east
+        return u_east * np.cos(a) + v_north * np.sin(a), -u_east * np.sin(a) + v_north * np.cos(a)
+
     def fields_si(self, cycle: datetime) -> dict[str, np.ndarray]:
         th = (cycle - EPOCH).total_seconds() / 3600
         local = (cycle.hour - 5) % 24
@@ -74,7 +81,7 @@ class DemoGrid:
         td_f = np.minimum(36 + 9 * warm + 2.5 * self.n[1] - 0.12 * (self.lat - 44.2) * 5, t_f - 0.8)
         wind = np.clip(7 + 13 * np.exp(-s ** 2 / 1.5) + 3 * self.n[2] + 2 * warm, 0.3, None)
         gust = wind * (1.3 + 0.1 * np.abs(self.n[3])) + 3
-        dirn = np.radians(250 + 25 * self.n[3])
+        dirn = np.radians(215 + 85 * (1 - warm) + 6 * self.n[3])   # south-westerly ahead of the front, west-north-westerly behind
         # station pressure consistent with the sea-level field and terrain (fixed point on the MSLP reduction)
         z, slp = self.terrain_m(), self.slp_mb(cycle)
         p = slp.copy()
@@ -92,7 +99,9 @@ class DemoGrid:
             "SPFH": 0.622 * e / (p - 0.378 * e),
             "WDIR": np.degrees(dirn) % 360.0,
             "WIND": wind / 2.2369362921, "GUST": gust / 2.2369362921,
-            "UGRD": -wind / 2.2369362921 * np.sin(dirn), "VGRD": -wind / 2.2369362921 * np.cos(dirn),
+            # like the real RTMA / URMA the components are relative to the *grid* (uvRelativeToGrid = 1), not east / north
+            **dict(zip(("UGRD", "VGRD"), self.to_grid_relative(-wind / 2.2369362921 * np.sin(dirn),
+                                                               -wind / 2.2369362921 * np.cos(dirn)))),
             "VIS": vis, "CEIL": ceil, "TCDC": np.clip(20 + 80 * cloudy + 10 * self.n[2], 0, 100),
         }
 
@@ -104,7 +113,7 @@ class DemoGrid:
                     latitudeOfFirstGridPointInDegrees=self.first[1],
                     longitudeOfFirstGridPointInDegrees=self.first[0] % 360,
                     LoVInDegrees=265.0, LaDInDegrees=25.0, Latin1InDegrees=25.0, Latin2InDegrees=25.0,
-                    DxInMetres=DX, DyInMetres=DX, latitudeOfSouthernPoleInDegrees=-90.0,
+                    DxInMetres=DX, DyInMetres=DX, resolutionAndComponentFlags=8, latitudeOfSouthernPoleInDegrees=-90.0,
                     longitudeOfSouthernPoleInDegrees=0.0, iScansNegatively=0, jScansPositively=1,
                     dataDate=int(f"{cycle:%Y%m%d}"), dataTime=cycle.hour * 100,
                     packingType="grid_simple", bitsPerValue=14)
@@ -127,6 +136,7 @@ class FakeS3:
         self.missing = missing or set()     # {(product_prefix, hours_before_now)} that were "never published"
         self.grid = DemoGrid()
         self._files: OrderedDict = OrderedDict()
+        self._lock = threading.Lock()
         self.range_requests: list[tuple[str, str | None]] = []
 
     def _cycle_ok(self, prefix: str, cycle: datetime) -> bool:
@@ -136,18 +146,19 @@ class FakeS3:
 
     def _file(self, prefix: str, cycle: datetime):
         key = (prefix, cycle)
-        if key not in self._files:
-            si = self.grid.fields_si(cycle)
-            blob, idx, off = b"", [], 0
-            for i, (var, level) in enumerate(MESSAGES, 1):
-                m = self.grid.message(si[var], cycle)
-                idx.append(f"{i}:{off}:d={cycle:%Y%m%d%H}:{var}:{level}:anl:")
-                blob += m
-                off += len(m)
-            self._files[key] = (blob, "\n".join(idx) + "\n")
-            while len(self._files) > 3:
-                self._files.popitem(last=False)
-        return self._files[key]
+        with self._lock:                                   # the pipeline fetches from several threads
+            if key not in self._files:
+                si = self.grid.fields_si(cycle)
+                blob, idx, off = b"", [], 0
+                for i, (var, level) in enumerate(MESSAGES, 1):
+                    m = self.grid.message(si[var], cycle)
+                    idx.append(f"{i}:{off}:d={cycle:%Y%m%d%H}:{var}:{level}:anl:")
+                    blob += m
+                    off += len(m)
+                self._files[key] = (blob, "\n".join(idx) + "\n")
+                while len(self._files) > 4:
+                    self._files.popitem(last=False)
+            return self._files[key]
 
     def list_objects_v2(self, Bucket, Prefix, MaxKeys=1000, **_):
         m = re.match(r"^([a-z0-9]+)\.(\d{8})/\1\.t(\d{2})z\.2dvaranl_ndfd$", Prefix)
