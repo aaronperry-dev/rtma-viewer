@@ -103,15 +103,56 @@ class MapContext:
         return cls(grid, x, y, land, labels, layers)
 
 
-def region_stats(ctx: MapContext, field: np.ndarray) -> dict:
+def region_stats(ctx: MapContext, field: np.ndarray, circular: bool = False) -> dict:
     v = field[ctx.land & np.isfinite(field)]
     if v.size == 0:
         return {"min": None, "mean": None, "max": None}
+    if circular:                      # angles: min/max are meaningless; report the vector-mean direction
+        r = np.radians(v.astype(np.float64))
+        mean = float(np.degrees(np.arctan2(np.sin(r).mean(), np.cos(r).mean())) % 360.0)
+        return {"min": None, "mean": round(mean, 1), "max": None}
     return {"min": round(float(v.min()), 1), "mean": round(float(v.mean()), 1), "max": round(float(v.max()), 1)}
 
 
-def station_values(ctx: MapContext, field: np.ndarray) -> dict[str, float | None]:
-    return {s.icao: (round(float(field[k]), 1) if np.isfinite(field[k]) else None) for s, k, _, _ in ctx.labels}
+def station_values(ctx: MapContext, field: np.ndarray, skip: np.ndarray | None = None) -> dict[str, float | None]:
+    return {s.icao: (round(float(field[k]), 1) if np.isfinite(field[k]) and not (skip is not None and skip[k]) else None)
+            for s, k, _, _ in ctx.labels}
+
+
+def label_text(var: Variable | None, v: float, signed: bool) -> str:
+    """Text printed at a station: whole numbers by default, per-variable decimals / custom text for current fields."""
+    if var is not None and var.labeler is not None and not signed:
+        return var.labeler(float(v))
+    d = 0
+    if var is not None:
+        d = var.decimals if not signed or var.chg_decimals is None else var.chg_decimals
+    q = round(float(v), d)
+    if q == 0:
+        return "0" if d == 0 else f"{0:.{d}f}"
+    return f"{q:+.{d}f}" if signed else f"{q:.{d}f}"
+
+
+def smooth(a: np.ndarray, sigma: float) -> np.ndarray:
+    """NaN-aware separable Gaussian smoothing (sigma in grid cells), no SciPy needed."""
+    r = max(1, int(round(3 * sigma)))
+    k = np.exp(-0.5 * (np.arange(-r, r + 1) / sigma) ** 2)
+    k /= k.sum()
+    w = np.isfinite(a).astype(np.float64)
+    v = np.where(w > 0, a, 0.0).astype(np.float64)
+
+    def conv(m, axis):
+        pad = [(0, 0), (0, 0)]
+        pad[axis] = (r, r)
+        m = np.pad(m, pad, mode="edge")
+        return np.apply_along_axis(lambda x: np.convolve(x, k, mode="valid"), axis, m)
+
+    num, den = conv(conv(v, 0), 1), conv(conv(w, 0), 1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        out = num / den
+    return np.where(w > 0, out, np.nan)
+
+
+ISOBAR_SIGMA_CELLS = 5.0        # ~12 km: removes the terrain-scale noise of the sea-level reduction, keeps fronts / troughs
 
 
 def _bold_regular(fig, x, y, bold, regular, size, right=False):
@@ -128,7 +169,8 @@ def _bold_regular(fig, x, y, bold, regular, size, right=False):
 
 
 def render_panel(ctx: MapContext, field: np.ndarray, style: Style, *, texts: tuple[str, str, str, str], signed: bool,
-                 out: Path, dpi: int = 100, colors: int = 256) -> int:
+                 out: Path, dpi: int = 100, colors: int = 256, var: Variable | None = None,
+                 skip_labels: np.ndarray | None = None) -> int:
     cmap, norm = style.cmap_norm()
     fig = plt.figure(figsize=(FIG_W, FIG_H), dpi=dpi, facecolor="white")
     ax = fig.add_axes([MARGIN / FIG_W, FOOTER_H / FIG_H, MAP_W / FIG_W, MAP_H / FIG_H], projection=PROJ)
@@ -147,14 +189,31 @@ def render_panel(ctx: MapContext, field: np.ndarray, style: Style, *, texts: tup
     add(L.states, edgecolor="black", linewidth=1.8, zorder=4)
     add(L.coast, edgecolor="black", linewidth=1.2, zorder=4)
 
-    # values at METAR stations (nearest analysis cell), bold with a white halo
     halo = lambda w: [pe.withStroke(linewidth=w, foreground="white")]
+
+    # isobars (MSLP): contours of a lightly smoothed field, every ``isobar_step`` mb, labelled every other one
+    if var is not None and var.isobar_step and not signed:
+        step = var.isobar_step
+        sm = smooth(field, ISOBAR_SIGMA_CELLS)
+        lo, hi = np.nanmin(sm), np.nanmax(sm)
+        levels = np.arange(np.floor(lo / step) * step, hi + step, step)
+        if len(levels) > 1:
+            cs = ax.contour(ctx.x, ctx.y, np.ma.masked_invalid(sm), levels=levels, colors="black", linewidths=0.8,
+                            alpha=0.85, zorder=5)
+            labelled = [lv for lv in levels if abs(lv / (2 * step) - round(lv / (2 * step))) < 1e-6]
+            try:
+                texts_ = ax.clabel(cs, labelled, fmt="%d", fontsize=8, inline=True, inline_spacing=6)
+                for t in texts_:
+                    t.set_path_effects(halo(2.0))
+            except Exception as exc:                 # no label fits / no contour at those levels: lines alone are fine
+                log.debug("isobar labels skipped: %s", exc)
+
+    # values at METAR stations (nearest analysis cell), bold with a white halo
     for st, (r, c), px, py in ctx.labels:
         v = field[r, c]
-        if not np.isfinite(v):
+        if not np.isfinite(v) or (skip_labels is not None and skip_labels[r, c]):
             continue
-        n = int(round(float(v)))
-        txt = "0" if n == 0 else (f"{n:+d}" if signed else f"{n:d}")
+        txt = label_text(var, v, signed)
         ax.annotate(txt, (px, py), xytext=(0, 1.5 if SHOW_STATION_IDS else 0), textcoords="offset points",
                     fontsize=7.4, fontweight="bold", color="black", ha="center", va="center", zorder=8,
                     path_effects=halo(2.4), annotation_clip=False)
@@ -172,7 +231,10 @@ def render_panel(ctx: MapContext, field: np.ndarray, style: Style, *, texts: tup
     # ------------------------------------------------------------------ colour bar (bottom left) + branding
     bar_h, bar_y = 0.28, FOOTER_H - 0.13 - 0.28
     cax = fig.add_axes([0.48 / FIG_W, bar_y / FIG_H, 7.35 / FIG_W, bar_h / FIG_H])
-    fmt = lambda v, _: "0" if abs(v) < 1e-9 else f"{v:g}"          # legend: no "+" signs (as in the WPC bar)
+    def fmt(v, _):                                                    # legend: no "+" signs (as in the WPC bar)
+        if style.tick_labels:
+            return next((t for k, t in style.tick_labels.items() if abs(k - v) < 1e-6), "")
+        return "0" if abs(v) < 1e-9 else f"{v:g}"
     cb = fig.colorbar(mesh, cax=cax, orientation="horizontal", extend="neither", ticks=style.ticks,
                       format=mticker.FuncFormatter(fmt), spacing="uniform" if style.uniform else "proportional")
     cb.ax.tick_params(labelsize=style.tick_fontsize, length=3, width=0.8, pad=2, colors="black")

@@ -14,13 +14,17 @@ from datetime import datetime, timedelta, timezone
 
 import numpy as np
 
+from . import derived as _d
+
 R_EARTH = 6371229.0
 DX = 2539.703
 EPOCH = datetime(2026, 11, 5, tzinfo=timezone.utc)
 
-MESSAGES = [("PRES", "surface"), ("TMP", "2 m above ground"), ("DPT", "2 m above ground"),
-            ("UGRD", "10 m above ground"), ("VGRD", "10 m above ground"),
-            ("WIND", "10 m above ground"), ("GUST", "10 m above ground")]
+# the real 2dvaranl_ndfd inventory (order and level strings as published by NCEP)
+MESSAGES = [("HGT", "surface"), ("PRES", "surface"), ("TMP", "2 m above ground"), ("DPT", "2 m above ground"),
+            ("UGRD", "10 m above ground"), ("VGRD", "10 m above ground"), ("SPFH", "2 m above ground"),
+            ("WDIR", "10 m above ground"), ("WIND", "10 m above ground"), ("GUST", "10 m above ground"),
+            ("VIS", "surface"), ("CEIL", "cloud ceiling"), ("TCDC", "entire atmosphere (considered as a single layer)")]
 
 
 def _noise(shape, seed, sigma):
@@ -46,6 +50,20 @@ class DemoGrid:
         self.n = [_noise(shape, s, sg) for s, sg in ((1, 6), (2, 10), (3, 5), (4, 4))]
         self.first = self.proj(self.x0, self.y0, inverse=True)   # lon, lat of grid point (0, 0)
 
+    def terrain_m(self) -> np.ndarray:
+        """Two synthetic massifs (one ~1100 m, one ~600 m); the sea east of 220 km is at 0 m."""
+        z = (1100 * np.exp(-((self.xkm + 60) ** 2 + (self.ykm - 40) ** 2) / (2 * 45 ** 2))
+             + 600 * np.exp(-((self.xkm - 80) ** 2 + (self.ykm + 60) ** 2) / (2 * 60 ** 2))
+             + 25 * self.n[0])
+        return np.where(self.xkm > 220, 0.0, np.clip(z, 0, None))
+
+    def slp_mb(self, cycle: datetime) -> np.ndarray:
+        """Synthetic sea-level pressure: a trough on the moving front, higher pressure behind it."""
+        th = (cycle - EPOCH).total_seconds() / 3600
+        s = (self.xkm - (-250 + 40 * (th - 12))) / 90.0
+        warm = (1 + np.tanh(s)) / 2
+        return 1006 + 14 * (1 - warm) - 3 * np.exp(-s ** 2 / 2) + 0.8 * self.n[1] + 0.004 * self.ykm
+
     def fields_si(self, cycle: datetime) -> dict[str, np.ndarray]:
         th = (cycle - EPOCH).total_seconds() / 3600
         local = (cycle.hour - 5) % 24
@@ -57,11 +75,25 @@ class DemoGrid:
         wind = np.clip(7 + 13 * np.exp(-s ** 2 / 1.5) + 3 * self.n[2] + 2 * warm, 0.3, None)
         gust = wind * (1.3 + 0.1 * np.abs(self.n[3])) + 3
         dirn = np.radians(250 + 25 * self.n[3])
+        # station pressure consistent with the sea-level field and terrain (fixed point on the MSLP reduction)
+        z, slp = self.terrain_m(), self.slp_mb(cycle)
+        p = slp.copy()
+        for _ in range(4):
+            tv = _d.virtual_temperature_k(t_f, td_f, p) + 0.5 * _d.STD_LAPSE * z
+            p = slp * np.exp(-_d.G0 * z / (_d.RD * tv))
+        e = _d.sat_vapor_pressure((td_f - 32) / 1.8)
+        # fog / low cloud / reduced visibility hugging the front
+        cloudy = np.exp(-s ** 2 / 2.5)
+        vis = np.clip(16000 * (1 - 0.93 * np.exp(-s ** 2 / 1.2)) + 400 * self.n[2], 250, 16000)
+        ceil = np.where(cloudy > 0.2, 150 + 2500 * (1 - cloudy) + 60 * self.n[3], 16000.0).clip(30, 16000)
         return {
-            "PRES": np.full_like(t_f, 101325.0),
+            "HGT": z, "PRES": p * 100.0,
             "TMP": (t_f - 32) / 1.8 + 273.15, "DPT": (td_f - 32) / 1.8 + 273.15,
+            "SPFH": 0.622 * e / (p - 0.378 * e),
+            "WDIR": np.degrees(dirn) % 360.0,
             "WIND": wind / 2.2369362921, "GUST": gust / 2.2369362921,
             "UGRD": -wind / 2.2369362921 * np.sin(dirn), "VGRD": -wind / 2.2369362921 * np.cos(dirn),
+            "VIS": vis, "CEIL": ceil, "TCDC": np.clip(20 + 80 * cloudy + 10 * self.n[2], 0, 100),
         }
 
     def message(self, values: np.ndarray, cycle: datetime) -> bytes:

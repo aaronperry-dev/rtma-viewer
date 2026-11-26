@@ -40,12 +40,40 @@ class FieldStore:
 
     # ---------------------------------------------------------------- cache
     def _path(self, cycle: datetime, var: Variable) -> Path:
+        if var.static:                                       # time-invariant: one file, never pruned
+            return self.dir / "static" / f"{var.key}.npy"
         return self.dir / f"{cycle:%Y%m%d%H}_{var.key}.npy"
 
-    def prune(self, keep_hours: int, now: datetime):
-        cutoff = now - timedelta(hours=keep_hours)
+    @staticmethod
+    def _encode(var: Variable, disp: np.ndarray) -> np.ndarray:
+        """Display-unit field -> compact cache dtype.  float16 (<=0.06 units) unless the variable needs more
+        precision than that: pressure is packed as uint16 at 0.01 mb (float16 would be 0.5-1 mb at ~1000 mb)."""
+        if var.static:
+            return disp.astype(np.float32)
+        if var.pack is None:
+            return disp.astype(np.float16)
+        offset, scale = var.pack
+        with np.errstate(invalid="ignore"):
+            q = np.round((disp.astype(np.float64) - offset) * scale)
+        bad = ~np.isfinite(q) | (q < 0) | (q > 65534)
+        return np.where(bad, 65535, q).astype(np.uint16)       # 65535 = missing
+
+    @staticmethod
+    def _decode(var: Variable, arr: np.ndarray) -> np.ndarray:
+        if var.pack is None or arr.dtype != np.uint16:
+            return arr.astype(np.float32)
+        offset, scale = var.pack
+        out = arr.astype(np.float32) / np.float32(scale) + np.float32(offset)
+        out[arr == 65535] = np.nan
+        return out
+
+    def prune(self, keep_hours: int, now: datetime, keep_by_var: dict[str, int] | None = None):
+        """Delete cached cycles older than ``keep_hours`` (per variable key if given in ``keep_by_var``, so variables
+        that only ever need the newest cycle do not pile up 28 hours of files)."""
         for p in self.dir.glob("??????????_*.npy"):
             try:
+                key = p.stem.split("_", 1)[1]
+                cutoff = now - timedelta(hours=(keep_by_var or {}).get(key, keep_hours))
                 if datetime.strptime(p.name[:10], "%Y%m%d%H").replace(tzinfo=timezone.utc) < cutoff:
                     p.unlink()
             except ValueError:
@@ -60,7 +88,7 @@ class FieldStore:
             p = self._path(cyc, var)
             if self.grid is not None and p.exists():
                 try:
-                    out[(cyc, var.key)] = np.load(p).astype(np.float32)
+                    out[(cyc, var.key)] = self._decode(var, np.load(p))
                     self.stats["cache_hits"] += 1
                     continue
                 except Exception:
@@ -119,8 +147,9 @@ class FieldStore:
                 out[(cyc, var.key)] = None
                 continue
             si = arrays[0] if len(arrays) == 1 else np.hypot(*arrays)
-            disp = var.convert(si).astype(np.float16)          # float16 is plenty (<=0.06 units) and halves the cache
-            self.dir.mkdir(parents=True, exist_ok=True)
-            np.save(self._path(cyc, var), disp)
-            out[(cyc, var.key)] = disp.astype(np.float32)
+            stored = self._encode(var, var.convert(si))        # compact on disk (float16 / packed uint16 / static float32)
+            path = self._path(cyc, var)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            np.save(path, stored)
+            out[(cyc, var.key)] = self._decode(var, stored)    # same values a later cache hit will return
         return out

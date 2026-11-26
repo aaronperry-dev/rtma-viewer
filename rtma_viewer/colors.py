@@ -77,6 +77,39 @@ DEWPOINT_F = Ramp([  # dry sand -> green -> teal -> blue -> deep violet (monoton
     (55, "#3fa3ad"), (62, "#2a82b3"), (68, "#2f60ab"), (73, "#3d44a0"), (78, "#4d2c85"), (86, "#2f0f52"),
 ])
 
+# Station (surface) pressure, mb: mostly a map of elevation, so a plain sequential ramp (monotone lightness): dark = high ground.
+PRESSURE_MB = Ramp([
+    (800, "#2b1a5a"), (860, "#33408f"), (920, "#2d6fb0"), (980, "#2d9bb0"), (1010, "#62c29a"),
+    (1030, "#b4df8d"), (1050, "#f3f0a0"),
+])
+
+# Mean sea-level pressure, mb: diverging about ~1013 (violet/blue lows -> pale -> amber/red highs)
+MSLP_MB = Ramp([
+    (940, "#4a1470"), (960, "#7a2d9c"), (980, "#3a4fc0"), (996, "#4a90d9"), (1006, "#a6d3ea"),
+    (1013, "#f1f1ee"), (1020, "#f8e29a"), (1030, "#f0a24e"), (1042, "#d4582a"), (1060, "#7e1b1b"),
+])
+
+# Relative humidity, %: dry brown -> tan -> pale -> green -> blue (saturated)
+RH_PCT = Ramp([
+    (0, "#7f3b08"), (20, "#d29a52"), (40, "#f0e0ae"), (55, "#cfe6bf"), (70, "#8dccb0"), (85, "#3a9fb8"), (100, "#1f4e9c"),
+])
+
+# Dew point depression (T - Td), °F: saturated = deep blue so fog-prone air stands out; dry = warm tones
+DPDEP_F = Ramp([
+    (0, "#0d3b8c"), (3, "#2e86c1"), (6, "#7fc8d8"), (10, "#d9ecc8"), (15, "#f3e3a6"), (20, "#eeb872"), (30, "#d9734a"),
+    (40, "#8a2d1d"),
+])
+
+# Total cloud cover, %: clear = deep blue, broken = pale, overcast = dark grey
+CLOUD_PCT = Ramp([(0, "#0b4f9c"), (25, "#5b9bd5"), (50, "#cfd8e0"), (75, "#8f9aa6"), (100, "#4b5560")])
+
+# Terrain height, ft
+TERRAIN_FT = Ramp([
+    (0, "#9ccf9a"), (1000, "#e6e3a0"), (2000, "#d9b073"), (3000, "#b0804e"), (4000, "#8a6a56"), (5000, "#cfc7c2"),
+    (6000, "#f4f1ee"),
+])
+_SEA = "#bcd9ea"
+
 # --------------------------------------------------------------------------- NWS legends (sampled from NWS Gray/Portland maps)
 # Wind speed / gust (mph): NWS "Maximum Wind Gust" legend.  Edges are the whole-number bin starts of the legend labels
 # (0-5, 6-10, 11-15, ... 81-100, 101-120, 121-140, 141-150).  Same colours for sustained wind and gusts.
@@ -117,9 +150,19 @@ class Style:
     signed: bool = False
     uniform: bool = False          # legend with equal-width blocks (uneven levels)
     tick_fontsize: float = 12.5
+    tick_labels: dict | None = None   # {tick value: text} instead of the number (e.g. compass points)
 
     def cmap_norm(self):
-        return from_levels_and_colors(self.levels, [tuple(c) for c in self.colors], extend=self.extend)
+        cmap, norm = from_levels_and_colors(self.levels, [tuple(c) for c in self.colors], extend=self.extend)
+        # matplotlib treats a value *equal to the top level* as out of range, and with extend="neither" that is
+        # transparent: RH / cloud cover capped at exactly 100 %, wind direction of exactly 360 deg would punch holes.
+        # Out-of-range values take the nearest end colour instead.
+        extremes = {}
+        if self.extend in ("neither", "min"):
+            extremes["over"] = tuple(self.colors[-1])
+        if self.extend in ("neither", "max"):
+            extremes["under"] = tuple(self.colors[0])
+        return (cmap.with_extremes(**extremes) if extremes else cmap), norm
 
 
 def _n_extend(extend: str) -> int:
@@ -150,9 +193,17 @@ _WPC_COLORS = [
     "#d4b9da",                                                        # above +50
 ]
 
-def change_style() -> Style:
+# Pressure changes are an order of magnitude smaller than temperature changes (a 3-hour fall of 4 mb is a fast one), so
+# pressure / MSLP use the same 25 colours on finer levels (same symmetric shape and white centre).
+_PRESSURE_CHANGE_LEVELS = np.array([-30, -24, -20, -16, -12, -9, -6, -4, -3, -2, -1, -0.5,
+                                    0.5, 1, 2, 3, 4, 6, 9, 12, 16, 20, 24, 30], float)
+_PRESSURE_KEYS = ("pressure", "mslp")
+
+
+def change_style(var_key: str | None = None) -> Style:
     cols = np.array([to_rgb(c) for c in _WPC_COLORS])
-    return Style(_WPC_LEVELS.copy(), cols, "both", _WPC_LEVELS.copy(), signed=True, uniform=True, tick_fontsize=10.5)
+    levels = _PRESSURE_CHANGE_LEVELS if var_key in _PRESSURE_KEYS else _WPC_LEVELS
+    return Style(levels.copy(), cols, "both", levels.copy(), signed=True, uniform=True, tick_fontsize=10.5)
 
 
 def wind_style() -> Style:
@@ -166,15 +217,66 @@ def apparent_style() -> Style:
                  tick_fontsize=11)
 
 
+def _custom(levels, hex_colors, extend, ticks=None, tick_fontsize=10.5, uniform=True, tick_labels=None) -> Style:
+    levels = np.asarray(levels, float)
+    n = len(levels) - 1 + (1 if extend in ("min", "max") else 2 if extend == "both" else 0)
+    assert len(hex_colors) == n, (len(hex_colors), n)
+    return Style(levels, np.array([to_rgb(c) for c in hex_colors]), extend,
+                 levels if ticks is None else np.asarray(ticks, float), uniform=uniform,
+                 tick_fontsize=tick_fontsize, tick_labels=tick_labels)
+
+
+def visibility_style() -> Style:
+    """Statute miles: <1/4, 1/2, 1, 2, 3, 5, 7, 9.5 and unrestricted (RTMA caps near 10 mi)."""
+    return _custom([0, 0.25, 0.5, 1, 2, 3, 5, 7, 9.5],
+                   ["#8e0152", "#c51b7d", "#e34a33", "#fc8d59", "#fdbb84", "#fee08b", "#d9ef8b", "#a6d96a", "#e8f1f5"], "max")
+
+
+def ceiling_style() -> Style:
+    """Feet AGL, aviation-flavoured: <200, 500 (LIFR), 1000 (IFR), 2000-3000 (MVFR), 5000, 8000, 12000+ (clear)."""
+    return _custom([0, 200, 500, 1000, 2000, 3000, 5000, 8000, 12000],
+                   ["#7a0045", "#c2185b", "#e53935", "#fb8c00", "#fdd835", "#aed581", "#4fc3f7", "#9fa8da", "#eceff1"], "max")
+
+
+def terrain_style() -> Style:
+    levels = [0, 20] + list(range(250, 6001, 250))                       # first bin is sea level
+    centers = (np.array(levels[1:-1]) + np.array(levels[2:])) / 2
+    cols = [_SEA] + [to_hex(c) for c in TERRAIN_FT(centers)] + [to_hex(TERRAIN_FT(6000.0)[0])]
+    return _custom(levels, cols, "max", ticks=np.arange(0, 6001, 1000), tick_fontsize=11, uniform=False)
+
+
+_COMPASS = {0: "N", 45: "NE", 90: "E", 135: "SE", 180: "S", 225: "SW", 270: "W", 315: "NW", 360: "N"}
+_DIR_RAMP = Ramp([(0, "#3b6fd8"), (45, "#35b6c9"), (90, "#3fbf6b"), (135, "#c8d948"), (180, "#f0a03a"),
+                  (225, "#e5533d"), (270, "#c0449a"), (315, "#7a4fcf"), (360, "#3b6fd8")])
+
+
+def direction_style() -> Style:
+    """Wind direction in 16 compass sectors (N is split across 0/360 so every bin is a true sector), cyclic colours."""
+    levels = [0.0] + [11.25 + 22.5 * i for i in range(16)] + [360.0]              # 0, 11.25, 33.75 ... 348.75, 360
+    centers = np.array([0.0] + [22.5 * i for i in range(1, 16)] + [360.0])        # N | NNE ... NNW | N
+    return _custom(levels, [to_hex(c) for c in _DIR_RAMP(centers)], "neither", ticks=sorted(_COMPASS), tick_fontsize=11,
+                   uniform=False, tick_labels=_COMPASS)
+
+
 _ABS = {
     "temp": lambda: sequential_style(TEMP_F, -40, 120, 1, 10, "both"),
     "dewpoint": lambda: sequential_style(DEWPOINT_F, -20, 86, 1, 10, "both"),
     "wind": wind_style,
     "gust": wind_style,
     "apparent": apparent_style,
+    "wetbulb": lambda: sequential_style(TEMP_F, -40, 120, 1, 10, "both"),    # same legend as 2 m temperature: directly comparable
+    "rh": lambda: sequential_style(RH_PCT, 0, 100, 2, 10, "neither"),
+    "dpdep": lambda: sequential_style(DPDEP_F, 0, 40, 1, 5, "max"),
+    "wdir": direction_style,
+    "pressure": lambda: sequential_style(PRESSURE_MB, 800, 1050, 2, 25, "both"),
+    "mslp": lambda: sequential_style(MSLP_MB, 940, 1060, 2, 10, "both"),
+    "vis": visibility_style,
+    "ceiling": ceiling_style,
+    "cloud": lambda: sequential_style(CLOUD_PCT, 0, 100, 5, 10, "neither"),
+    "terrain": terrain_style,
 }
 
 def style_for(var_key: str, interval: int) -> Style:
     if interval == 0:
         return _ABS[var_key]()
-    return change_style()
+    return change_style(var_key)

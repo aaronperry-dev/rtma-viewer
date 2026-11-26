@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import boundaries, render
-from .config import INTERVALS, PRODUCTS, SOURCE_VARIABLES, VARIABLES
+from .config import FT_PER_M, INTERVALS, PANEL_VARIABLES, PRODUCTS, SOURCE_VARIABLES, VARIABLES, hours_needed, panel_hours
 from .fields import FieldStore
 
 log = logging.getLogger("rtma_viewer")
@@ -34,23 +34,35 @@ def build_product(product, client, now, out: Path, cache: Path, layers, dpi: int
         return rec
     log.info("%s: newest cycle %s", product.key, cycle)
 
-    jobs = [(cycle - timedelta(hours=h), var) for var in SOURCE_VARIABLES.values() for h in INTERVALS]
+    need = hours_needed()                                 # only the cycles each variable's panels (and derived inputs) use
+    jobs = [(cycle - timedelta(hours=h), SOURCE_VARIABLES[k]) for k, hrs in need.items() for h in hrs]
     fields = store.load(jobs)
+    for var in SOURCE_VARIABLES.values():                 # static fields (terrain) are valid at every time
+        if var.static:
+            for h in INTERVALS:
+                fields[(cycle - timedelta(hours=h), var.key)] = fields.get((cycle, var.key))
     for var in VARIABLES.values():                        # derived variables, computed from the cached fields
         if var.derive is None:
             continue
-        for h in INTERVALS:
+        for h in panel_hours(var):
             t = cycle - timedelta(hours=h)
             parts = [fields.get((t, k)) for k in var.requires]
             fields[(t, var.key)] = None if any(a is None for a in parts) else var.derive(*parts)
     ctx = render.MapContext.build(store.grid, layers)
 
     total_png = 0
-    for var in VARIABLES.values():
+    terrain_ft = fields.get((cycle, "terrain"))
+    for var in PANEL_VARIABLES.values():
         rec["panels"][var.key] = {}
-        cur = fields[(cycle, var.key)]
+        skip = None                                       # stations where a value would be misleading (MSLP on summits)
+        if var.label_max_terrain_m and terrain_ft is not None:
+            skip = terrain_ft > var.label_max_terrain_m * FT_PER_M
+        cur = fields.get((cycle, var.key))
         for h in INTERVALS:
             ref_t = cycle - timedelta(hours=h)
+            if h not in panel_hours(var):                 # e.g. visibility / ceiling / wind direction: current field only
+                rec["panels"][var.key][str(h)] = None
+                continue
             prev = fields.get((ref_t, var.key))
             if cur is None or prev is None:
                 rec["panels"][var.key][str(h)] = None
@@ -60,16 +72,17 @@ def build_product(product, client, now, out: Path, cache: Path, layers, dpi: int
             style, signed = render.style_and_flags(var, h)
             texts = render.panel_text(product, var, h, cycle, ref_t if h else None)
             rel = f"img/{product.key}_{var.key}_{h}h.png"
-            stats = render.region_stats(ctx, data)
+            stats = render.region_stats(ctx, data, circular=var.circular)
             size = render.render_panel(ctx, data, style, texts=texts, signed=signed, out=out / rel,
-                                       dpi=dpi, colors=colors)
+                                       dpi=dpi, colors=colors, var=var, skip_labels=skip)
             total_png += size
             rec["panels"][var.key][str(h)] = {"file": rel, "ref": iso(ref_t) if h else None, **stats,
-                                              "stations": render.station_values(ctx, data)}
+                                              "stations": render.station_values(ctx, data, skip)}
     rec.update(status="ok", cycle=iso(cycle), lag_minutes=int((now - cycle).total_seconds() // 60))
     rec["bytes"] = {"png": total_png, "downloaded": store.src.bytes_downloaded,
                     "s3_requests": store.src.requests, **dict(store.stats)}
-    store.prune(keep_hours=max(INTERVALS) + 4, now=cycle)
+    keep = {k: (max(hrs) + 4 if max(hrs) else 0) for k, hrs in need.items()}   # current-only variables keep just the newest cycle
+    store.prune(keep_hours=max(INTERVALS) + 4, now=cycle, keep_by_var=keep)
     log.info("%s: %d PNG, %.2f MB; downloaded %.2f MB in %d requests; %s; %.0fs", product.key,
              sum(1 for v in rec["panels"].values() for p in v.values() if p), total_png / 1e6,
              store.src.bytes_downloaded / 1e6, store.src.requests, dict(store.stats), time.time() - t0)
@@ -109,8 +122,9 @@ def main(argv=None) -> int:
     layers = boundaries.load(render.PROJ)
     manifest = {"generated": iso(now), "version": int(now.timestamp()), "demo": args.demo,
                 "intervals": list(INTERVALS),
-                "variables": [{"key": v.key, "label": v.label, "long_name": v.long_name, "unit": v.unit}
-                              for v in VARIABLES.values()],
+                "variables": [{"key": v.key, "label": v.label, "long_name": v.long_name, "unit": v.unit,
+                               "group": v.group, "note": v.note, "circular": v.circular}
+                              for v in PANEL_VARIABLES.values()],
                 "products": {}}
     for key in args.products.split(","):
         manifest["products"][key] = build_product(PRODUCTS[key], client, now, out, cache, layers, args.dpi, args.colors)
