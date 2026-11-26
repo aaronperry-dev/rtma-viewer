@@ -89,7 +89,7 @@
   [hidden] { display: none !important; }
 
   @media (max-width: 900px) {
-    #seg-var { display: none; }               /* 61 variables: a grouped drop-down instead of seven rows of buttons */
+    #seg-var { display: none; }               /* 63 variables: a grouped drop-down instead of seven rows of buttons */
     #sel-var { display: block; }
     main { grid-template-columns: minmax(0, 1fr); }
     #compare { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -241,7 +241,9 @@ function renderSingle(unit, change) {
   const img = $("#map"), empty = $("#empty"), p = panel();
   if (!p) {
     img.hidden = true; empty.hidden = false;
-    empty.textContent = "This time step is not available for the selected product.";
+    empty.textContent = state.variable === "sfcwpc"
+      ? "No WPC surface analysis was saved within 3 hours of this map time. The page files each bulletin as it appears, so earlier times fill in only going forward."
+      : "This time step is not available for the selected product.";
   } else {
     empty.hidden = true; img.hidden = false;
     img.classList.add("loading");
