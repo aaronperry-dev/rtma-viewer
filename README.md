@@ -1,6 +1,6 @@
 # New England RTMA / URMA viewer
 
-Hourly maps of **46 variables** from NOAA's **RTMA** and **URMA** (2.5 km), each as the current field plus
+Hourly maps of **61 variables** from NOAA's **RTMA** and **URMA** (2.5 km), each as the current field plus
 **1 / 3 / 6 / 12 / 24-hour change** where a change is meaningful, published as a static dashboard on GitHub Pages:
 
 * **Basics:** temperature, dew point, apparent temperature, wind speed / gust / **direction**, **surface pressure**,
@@ -174,6 +174,18 @@ as KMWN reads the analysis at the grid's terrain height, not at 1917 m.)
 | **1 h precipitation** | `pcp` file (RTMA: MRMS radar-only; URMA: Stage IV) | no | inches of water in the hour ending at the valid time; station labels only where >= 0.01 in |
 | **3 / 6 / 12 / 24 / 48 h precipitation** | derived: sums of the hourly files | no | missing hours add nothing and the map says "N of M h available"; NWS Boston/Taunton total-precipitation ramp (0.01 ... 50 in) |
 | **1 / 3 / 6 / 12 / 24 / 48 h frozen precipitation** | derived: hourly precipitation, T, Td, surface pressure | no | liquid equivalent (inches of water) that fell while the mean of the start- and end-of-hour wet bulb was <= 32 F; same bins as the precipitation maps in a cool blue-purple ramp (ColorBrewer BuPu); a rough guide (see below) |
+| **Snowmaking hours** | derived: 49 hourly T, Td, surface pressure | no | hours in 24 with the wet bulb <= 28 F (ski-area snowmaking limit); interpolated between hourly analyses |
+| **Hours wind chill <= -15 / -25 F** | derived: 25 hourly T, wind | no | hours in 24; reference levels, since advisory / warning criteria differ by office |
+| **Hours gust >= 40 / >= 58 mph** | derived: 25 hourly `GUST` | no | hours in 24; wind advisory / high wind warning gust levels |
+| **Melt degree-hours (24 / 48 h)** | derived: hourly T | no | sum of F above 32 over the period (trapezoid rule): a snowmelt / runoff index |
+| **Freezing degree-hours (48 h)** | derived: 49 hourly T | no | sum of F below 32: river / lake ice growth and frost depth |
+| **Blizzard criteria** | derived: 6 hourly visibility, wind, gust | no | longest run of hourly analyses with visibility <= 1/4 mi and wind or gust >= 35 mph; 3 or more meets the NWS 3-hour definition |
+| **Flash freeze** | derived: 4 hourly T, hourly precipitation | no | none / fell below 32 F with liquid precipitation in 3 h / and fell >= 10 F |
+| **Freezing fog / drizzle favourable** | derived: T, Td, visibility, ceiling | no | T <= 32 F, T - Td <= 2 F, and visibility < 3 mi or ceiling < 1,000 ft; dense if visibility < 1/2 mi; snow also lights it up, so read it with radar |
+| **Wet-snow load risk** | derived: 7 hourly precipitation, T, Td, pressure, gust | no | liquid precipitation in the past 6 h in hours with wet bulb <= 32 F and T >= 31 F: >= 0.10 in, >= 0.25 in, >= 0.25 in with gusts >= 35 mph; rule-of-thumb thresholds |
+| **Radiational cooling setup** | derived: cloud cover, wind | no | clear (<= 25 %) or calm (<= 5 mph); both; both and very clear (<= 10 %) and nearly calm (<= 2 mph) |
+| **Cold pool / inversion** | derived: sea-level T, terrain | no | sea-level T minus its mean over land within ~25 km (21 x 21 cells, water excluded): negative = cold pool, positive = inversion / warm slope |
+| **24 h precipitation at T <= 32 F** | derived: 25 hourly precipitation and T | no | liquid that fell in hours with 2 m T <= 32 F: water landing on frozen surfaces (freezing rain's footprint, but also snow); cool precipitation ramp |
 | **Terrain height** | `HGT` (static) | no | the analysis grid's smoothed terrain, in feet |
 
 Current-only variables (no change maps) have 1 / 3 / 6 / 12 / 24-hour buttons greyed out; switching to one from a change map falls back
@@ -224,6 +236,17 @@ and ceiling are coarse, so it is guidance, not a METAR.
 -18 F or colder, 10 minutes at -33 F, 5 minutes at -48 F. The chart's shading is not a single wind-chill contour (its edges move a few
 degrees with wind speed), so treat these as round mid-chart values. In light wind (3 mph or less, where wind chill is undefined) the
 air temperature itself is compared.
+
+**Winter hazard diagnostics** (blizzard criteria, flash freeze, freezing fog, wet-snow load, radiational cooling, cold pool, snow-
+making, threshold hours, degree-hours, precipitation on a frozen surface) are *surface indicators*: they combine the analysed 2 m
+and 10 m fields, the hourly precipitation and the terrain, and cannot see the air aloft, so they say where conditions favour a hazard,
+not that it is happening. Their thresholds (35 mph and 1/4 mi for blizzards, 10 F in 3 h for flash freezes, 0.10 / 0.25 in for wet
+snow ...) are in `derived.py` and `config.py`. The precipitation-based ones (flash freeze, wet-snow load, precipitation on a frozen
+surface) use whatever hourly precipitation exists, like the totals, and the map says how many hours that was. Blizzard criteria also
+pull 6 hours of visibility, so the visibility cache is kept for 9 hours instead of 1; nothing else about the fetch plan changes. The
+cold-pool map needs no new data and is built from the sea-level temperature and terrain; its 21 x 21 window is
+`COLD_POOL_RADIUS_CELLS`. Peak memory of an hourly run is about 1.6 GB (measured on a cached URMA build), so a standard GitHub-hosted
+runner is fine.
 
 **Sea-level temperature** is `T + 6.5 K/km * z` (3.57 F per 1,000 ft); it is the thermal field the advection and frontogenesis maps
 use, because otherwise wind blowing along a slope would register as warm or cold advection.
