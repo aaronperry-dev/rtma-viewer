@@ -136,7 +136,7 @@ _FROZEN_NOTE = ("Liquid-equivalent frozen precipitation (snow, sleet and freezin
                 "the surface wet bulb was at or below 32 °F (average of the wet bulb at the start and end of each hour). It is water, not "
                 "snow depth - no snow-to-liquid ratio is applied. It cannot tell the frozen types apart, ignores the air aloft (rain can "
                 "fall through a cold surface layer; snow can melt before it lands) and treats an hour as all-or-nothing, so it is a rough "
-                "guide to where precipitation fell cold, not a forecast of accumulation. Same colours as the precipitation maps. " + _PCP_NOTE)
+                "guide to where precipitation fell cold, not a forecast of accumulation. Same bins as the precipitation maps, in cool blue-purple. " + _PCP_NOTE)
 
 VARIABLES: dict[str, Variable] = {
     # ------------------------------------------------------------------ temperature & moisture

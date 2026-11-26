@@ -349,6 +349,15 @@ def precip_style() -> Style:
     return _custom(_PCP_LEVELS, _PCP_COLORS, "max", ticks=_PCP_LEVELS[1:], tick_fontsize=10)
 
 
+# Frozen precipitation (liquid equivalent): the same bins as the precipitation legend in a cool ColorBrewer BuPu (light blue -> blue-purple ->
+# deep purple), so it reads as "the cold part of the water" next to the green precipitation maps.
+_FROZEN_COLORS = ["#ffffff"] + ['#bacfe4', '#acc6df', '#9fbcda', '#96acd2', '#8f9dc9', '#8c8cc1', '#8c79b8', '#8c68af', '#8a56a7', '#88449e', '#863092', '#831c84', '#770c73', '#62065f', '#4d004b'] + ["#4d004b"]                                  # no precipitation | 15 bins | over 50 in: the darkest
+
+
+def frozen_style() -> Style:
+    return _custom(_PCP_LEVELS, _FROZEN_COLORS, "max", ticks=_PCP_LEVELS[1:], tick_fontsize=10)
+
+
 def mixing_ratio_style() -> Style:
     levels = [0, 0.25, 0.5, 0.75, 1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10, 12, 16]
     centers = np.array(levels[:-1]) + np.diff(levels) / 2
@@ -386,7 +395,7 @@ _ABS = {
     "frostbite": frostbite_style,
     "pcp1": precip_style, "pcp3": precip_style, "pcp6": precip_style, "pcp12": precip_style, "pcp24": precip_style,
     "pcp48": precip_style,
-    "fpcp1": precip_style, "fpcp3": precip_style, "fpcp6": precip_style, "fpcp12": precip_style, "fpcp24": precip_style, "fpcp48": precip_style,
+    "fpcp1": frozen_style, "fpcp3": frozen_style, "fpcp6": frozen_style, "fpcp12": frozen_style, "fpcp24": frozen_style, "fpcp48": frozen_style,
     "pgrad": lambda: sequential_style(PGRAD_MB, 0, 5, 0.25, 1, "max"),
     "fltcat": flight_category_style,
     "tadv": lambda: diverging_style([-30, -20, -12, -8, -5, -3, -1, 1, 3, 5, 8, 12, 20, 30]),
