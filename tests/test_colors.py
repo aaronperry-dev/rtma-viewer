@@ -245,8 +245,15 @@ def test_precipitation_uses_the_nws_total_precipitation_legend():
     assert norm(0.004) == norm(0.0) != norm(0.01) and norm(0.09) == norm(0.01) != norm(0.10)        # 0.00 | 0.01-0.09 | 0.10-0.24
 
 
-def test_frozen_precipitation_is_liquid_equivalent_on_the_precip_legend():
-    ref = c.style_for("pcp24", 0)
-    for key in ("fpcp1", "fpcp3", "fpcp6", "fpcp12", "fpcp24", "fpcp48"):
+def test_frozen_precipitation_uses_precip_bins_in_a_cool_ramp():
+    ref, pr = c.style_for("fpcp24", 0), c.style_for("pcp24", 0)
+    assert list(ref.levels) == list(pr.levels) and ref.extend == "max"           # same bins, so amounts compare across maps
+    assert hexes(ref)[0] == "#ffffff" and len(hexes(ref)) == len(hexes(pr))
+    for key in ("fpcp1", "fpcp3", "fpcp6", "fpcp12", "fpcp48"):
         s_ = c.style_for(key, 0)
         assert np.array_equal(s_.levels, ref.levels) and np.allclose(s_.colors, ref.colors), key
+    from matplotlib.colors import to_rgb
+    for h in hexes(ref)[1:]:                                                     # every colour is blue/purple: blue channel leads green
+        r, g, b = to_rgb(h)
+        assert b > g and b >= r - 0.3, h
+    assert hexes(ref) != hexes(pr)
