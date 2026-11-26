@@ -103,6 +103,11 @@ RANGE_F = Ramp([(0, "#f3f1e8"), (10, "#cfe3c0"), (20, "#e8d78a"), (30, "#e3a24f"
 # Hours at or below freezing in 24 h: warm cream (none) -> pale blue -> blue -> deep indigo (frozen all day)
 FREEZE_HOURS = Ramp([(0, "#f6f1e4"), (6, "#bfe0ea"), (12, "#58a6d6"), (18, "#2d5fb0"), (24, "#2b1d70")])
 
+# Hours with a gust above a threshold, and degree-hours of melt (warm) / freezing (cold): cream -> warm reds, cream -> blues
+HOURS_WARM = Ramp([(0, "#f6f1e4"), (6, "#f4dc9a"), (12, "#ec9a4f"), (18, "#c4412f"), (24, "#6e1a4e")])
+MELT_DH = Ramp([(0, "#f6f1e4"), (0.25, "#f4dc9a"), (0.5, "#ec9a4f"), (0.75, "#c4412f"), (1, "#6e1a4e")])
+FREEZE_DH = Ramp([(0, "#f6f1e4"), (0.25, "#bfe0ea"), (0.5, "#58a6d6"), (0.75, "#2d5fb0"), (1, "#2b1d70")])
+
 # Number of freezing-point crossings in 24 h
 CROSSINGS = Ramp([(0, "#f6f1e4"), (1, "#f4dc9a"), (2, "#ec9a4f"), (4, "#c4412f"), (8, "#6e1a4e")])
 
@@ -358,6 +363,38 @@ def frozen_style() -> Style:
     return _custom(_PCP_LEVELS, _FROZEN_COLORS, "max", ticks=_PCP_LEVELS[1:], tick_fontsize=10)
 
 
+def stepped_style(ramp: Ramp, levels, tick_fontsize: float = 10) -> Style:
+    """Uneven levels with one equal colour block per bin along a ramp defined on 0..1, plus the top colour for values above the
+    last level."""
+    levels = list(levels)
+    cols = ramp(np.linspace(0, 1, len(levels)))
+    return _custom(levels, [to_hex(c) for c in cols], "max", ticks=levels[1:], tick_fontsize=tick_fontsize)
+
+
+_NONE = "#eef2f5"
+
+
+def blizzard_style() -> Style:
+    return categorical_style([_NONE, "#fff0b3", "#ffc04d", "#e8452c", "#b0102a", "#7a0a5e", "#3d0a63"],
+                             ["0 h", "1 h", "2 h", "3 h", "4 h", "5 h", "6 h"])
+
+
+def flash_freeze_style() -> Style:
+    return categorical_style([_NONE, "#5aa0e0", "#c4122f"], ["None", "Fell below 32 °F", "Flash freeze"])
+
+
+def freezing_fog_style() -> Style:
+    return categorical_style([_NONE, "#8fb7e8", "#4b3f9e"], ["None", "Favourable", "Dense"])
+
+
+def wet_snow_style() -> Style:
+    return categorical_style([_NONE, "#9ecbea", "#3c7fcf", "#c4122f"], ["< 0.10 in", "≥ 0.10 in", "≥ 0.25 in", "+ gusts"])
+
+
+def radiational_cooling_style() -> Style:
+    return categorical_style([_NONE, "#cfe0f5", "#7fa6e0", "#2b3f9e"], ["None", "Clear or calm", "Clear and calm", "Ideal"])
+
+
 def mixing_ratio_style() -> Style:
     levels = [0, 0.25, 0.5, 0.75, 1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10, 12, 16]
     centers = np.array(levels[:-1]) + np.diff(levels) / 2
@@ -393,6 +430,21 @@ _ABS = {
     "wcmin24": apparent_style,                                              # NWS "24-Hour Minimum Wind Chill" legend
     "gustmax24": wind_style,
     "frostbite": frostbite_style,
+    "snowmk28": lambda: sequential_style(FREEZE_HOURS, 0, 24, 1, 3, "neither"),
+    "wchrs15": lambda: sequential_style(FREEZE_HOURS, 0, 24, 1, 3, "neither"),
+    "wchrs25": lambda: sequential_style(FREEZE_HOURS, 0, 24, 1, 3, "neither"),
+    "gst40hrs": lambda: sequential_style(HOURS_WARM, 0, 24, 1, 3, "neither"),
+    "gst58hrs": lambda: sequential_style(HOURS_WARM, 0, 24, 1, 3, "neither"),
+    "pdh24": lambda: stepped_style(MELT_DH, [0, 1, 10, 25, 50, 100, 150, 200, 300, 400]),
+    "pdh48": lambda: stepped_style(MELT_DH, [0, 1, 20, 50, 100, 200, 300, 400, 600, 800]),
+    "fdh48": lambda: stepped_style(FREEZE_DH, [0, 1, 50, 100, 200, 300, 400, 600, 800, 1000, 1250, 1500]),
+    "blizz": blizzard_style,
+    "flashfrz": flash_freeze_style,
+    "frzfog": freezing_fog_style,
+    "wetsnow": wet_snow_style,
+    "radcool": radiational_cooling_style,
+    "coldpool": lambda: diverging_style([-12, -8, -5, -3, -2, -1, 1, 2, 3, 5, 8, 12]),
+    "pcpcold24": frozen_style,
     "pcp1": precip_style, "pcp3": precip_style, "pcp6": precip_style, "pcp12": precip_style, "pcp24": precip_style,
     "pcp48": precip_style,
     "fpcp1": frozen_style, "fpcp3": frozen_style, "fpcp6": frozen_style, "fpcp12": frozen_style, "fpcp24": frozen_style, "fpcp48": frozen_style,

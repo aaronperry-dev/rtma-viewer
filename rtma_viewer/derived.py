@@ -355,3 +355,178 @@ def min_wind_chill(t_stack, wind_stack):
     v = np.asarray(wind_stack, np.float64)
     wc = np.where((t <= WC_MAX_T_F) & (v > WC_MIN_WIND_MPH), wind_chill(t, v), t)
     return np.fmin.reduce(wc, axis=0).astype(np.float32)
+
+
+# ------------------------------------------------------------------------------------------------ winter hazard diagnostics
+# All are surface diagnostics from the analysed 2 m / 10 m fields: indicators of where conditions favour a hazard, not forecasts
+# and not substitutes for the observations or the air aloft.
+def wet_bulb_plane(t_f, td_f, p_mb, k: int):
+    """Wet bulb (°F) of hour-plane ``k`` of the stacks, one plane at a time (a whole stack of float64 temporaries is gigabytes)."""
+    return wet_bulb(np.asarray(t_f[k], np.float64), np.asarray(td_f[k], np.float64), np.asarray(p_mb[k], np.float64))
+
+
+def _mid_instants(a, b):
+    """Mean of an hour's two end values, or the one that exists; NaN if neither."""
+    both = np.isfinite(a) & np.isfinite(b)
+    return np.where(both, 0.5 * (a + b), np.where(np.isfinite(a), a, b))
+
+
+BLIZZARD_VIS_MI = 0.25         # NWS blizzard: visibility 1/4 mile or less ...
+BLIZZARD_WIND_MPH = 35.0       # ... with sustained wind or frequent gusts of 35 mph or more ...
+BLIZZARD_MIN_HOURS = 3         # ... lasting 3 hours or longer
+
+
+def blizzard_hours(vis_mi, wind_mph, gust_mph):
+    """Longest run of consecutive hourly analyses meeting the NWS blizzard conditions (visibility <= 1/4 mi and sustained wind or
+    gust >= 35 mph).  Each analysis stands for an hour, so 3 or more is the 3-hour blizzard criterion.  NaN where the visibility
+    is missing in every hour."""
+    vis = np.asarray(vis_mi, np.float64)
+    wind = np.fmax(np.asarray(wind_mph, np.float64), np.asarray(gust_mph, np.float64))
+    met = (vis <= BLIZZARD_VIS_MI) & (wind >= BLIZZARD_WIND_MPH)
+    run = np.zeros(vis.shape[1:], np.float32)
+    best = run.copy()
+    for k in range(vis.shape[0] - 1, -1, -1):                   # oldest hour first; runs may end at any hour
+        run = np.where(met[k], run + 1.0, 0.0).astype(np.float32)
+        best = np.maximum(best, run)
+    best[~np.isfinite(vis).any(axis=0)] = np.nan
+    return best
+
+
+def _box_sum(a, radius: int):
+    """Sum over the (2 radius + 1)-square window around every cell (truncated at the edges), by integral image."""
+    size = 2 * radius + 1
+    c = np.pad(np.asarray(a, np.float64), ((radius + 1, radius), (radius + 1, radius))).cumsum(0).cumsum(1)
+    return c[size:, size:] - c[:-size, size:] - c[size:, :-size] + c[:-size, :-size]
+
+
+COLD_POOL_RADIUS_CELLS = 10         # 21 x 21 cells = about 52 km
+
+
+def cold_pool(slt_f, terrain_ft, radius: int = COLD_POOL_RADIUS_CELLS):
+    """Sea-level-reduced temperature minus its mean over the land cells within about 25 km: negative where the air is colder than
+    the surroundings once elevation is accounted for (valley cold pools, radiational cooling, cold-air damming), positive where
+    it is warmer (inversions on slopes and ridges, warm air spilling downslope).  Water cells are left out of the mean and of
+    the map."""
+    slt = np.asarray(slt_f, np.float64)
+    land = (np.asarray(terrain_ft, np.float64) > 3.3) & np.isfinite(slt)
+    num = _box_sum(np.where(land, slt, 0.0), radius)
+    den = _box_sum(land.astype(np.float64), radius)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        out = np.where(land & (den > 0), slt - num / den, np.nan)
+    return out.astype(np.float32)
+
+
+FLASH_FREEZE_FALL_F = 10.0
+FLASH_FREEZE_MIN_LIQUID_IN = 0.01
+
+
+def flash_freeze(pcp, t_f):
+    """Flash-freeze indicator over the series (3 h): 0 none; 1 the temperature fell from above to at or below 32 °F with liquid
+    precipitation in the period (a wet surface freezing); 2 the same with a fall of 10 °F or more."""
+    pcp = np.asarray(pcp, np.float32)
+    t = np.asarray(t_f, np.float64)
+    n = pcp.shape[0] - 1
+    now, then = t[0], t[-1]
+    wet = np.nansum(pcp[:n], axis=0) >= FLASH_FREEZE_MIN_LIQUID_IN
+    crossed = (then > 32.0) & (now <= 32.0) & wet
+    cat = np.where(crossed, np.where(then - now >= FLASH_FREEZE_FALL_F, 2.0, 1.0), 0.0)
+    return np.where(np.isfinite(now) & np.isfinite(then), cat, np.nan).astype(np.float32)
+
+
+def freezing_fog(t_f, td_f, vis_mi, ceiling_ft):
+    """Freezing fog / drizzle favourable: 2 m temperature at or below 32 °F, dew point depression 2 °F or less, and visibility
+    under 3 mi or a ceiling under 1000 ft (1); dense when visibility is under 1/2 mi (2)."""
+    t, td = np.asarray(t_f, np.float64), np.asarray(td_f, np.float64)
+    vis, ceil = np.asarray(vis_mi, np.float64), np.asarray(ceiling_ft, np.float64)
+    fav = (t <= 32.0) & ((t - td) <= 2.0) & ((vis < 3.0) | (ceil < 1000.0))
+    cat = np.where(fav, np.where(vis < 0.5, 2.0, 1.0), 0.0)
+    return np.where(np.isfinite(t) & np.isfinite(td) & np.isfinite(vis) & np.isfinite(ceil), cat, np.nan).astype(np.float32)
+
+
+WET_SNOW_MIN_T_F = 31.0
+WET_SNOW_GUST_MPH = 35.0
+
+
+def wet_snow_load(pcp, t_f, td_f, p_mb, gust_mph):
+    """Heavy, sticky snow that loads trees and lines.  Counts the liquid precipitation of the hours in which the wet bulb was at
+    or below 32 °F while the air itself was 31 °F or warmer (marginal temperatures, where snow is densest), over the series:
+    0 less than 0.10 in; 1 at least 0.10 in; 2 at least 0.25 in; 3 at least 0.25 in with a gust of 35 mph or more in the period."""
+    pcp = np.asarray(pcp, np.float32)
+    n = pcp.shape[0] - 1
+    liquid = np.zeros(pcp.shape[1:], np.float32)
+    seen = np.zeros(pcp.shape[1:], bool)
+    wb_b, t_b = wet_bulb_plane(t_f, td_f, p_mb, 0), np.asarray(t_f[0], np.float64)
+    for k in range(n):
+        wb_a, t_a = wb_b, t_b
+        wb_b, t_b = wet_bulb_plane(t_f, td_f, p_mb, k + 1), np.asarray(t_f[k + 1], np.float64)
+        wb, t = _mid_instants(wb_a, wb_b), _mid_instants(t_a, t_b)
+        usable = np.isfinite(wb) & np.isfinite(t) & np.isfinite(pcp[k])
+        liquid += np.where(usable & (wb <= 32.0) & (t >= WET_SNOW_MIN_T_F), pcp[k], np.float32(0.0))
+        seen |= usable
+    gust = np.fmax.reduce(np.asarray(gust_mph, np.float64), axis=0)
+    cat = np.where(liquid >= 0.25, np.where(gust >= WET_SNOW_GUST_MPH, 3.0, 2.0), np.where(liquid >= 0.10, 1.0, 0.0))
+    cat[~seen] = np.nan
+    return cat.astype(np.float32)
+
+
+SNOWMAKING_WET_BULB_F = 28.0
+
+
+def snowmaking_hours(t_f, td_f, p_mb, threshold: float = SNOWMAKING_WET_BULB_F):
+    """Hours with the wet bulb at or below ``threshold`` (28 °F is the usual ski-area snowmaking limit), interpolating between
+    the hourly analyses; scaled to the full period if hours are missing."""
+    n = np.asarray(t_f).shape[0]
+    wb = np.stack([wet_bulb_plane(t_f, td_f, p_mb, k) for k in range(n)]).astype(np.float32)
+    return hours_at_or_below(wb, threshold)
+
+
+def radiational_cooling(cloud_pct, wind_mph):
+    """Radiational cooling setup (2 m, current analysis): 0 neither clear nor calm; 1 clear (<= 25 % cloud) or calm (<= 5 mph);
+    2 both; 3 both and very favourable (<= 10 % cloud and <= 2 mph)."""
+    cloud, wind = np.asarray(cloud_pct, np.float64), np.asarray(wind_mph, np.float64)
+    cat = (cloud <= 25.0).astype(float) + (wind <= 5.0)
+    cat = np.where((cat == 2.0) & (cloud <= 10.0) & (wind <= 2.0), 3.0, cat)
+    return np.where(np.isfinite(cloud) & np.isfinite(wind), cat, np.nan).astype(np.float32)
+
+
+def hours_at_or_above(stack, threshold: float):
+    """Hours at or above ``threshold`` (interpolated between hourly analyses; scaled if hours are missing)."""
+    return hours_at_or_below(-np.asarray(stack, np.float32), -threshold)
+
+
+def wind_chill_hours(t_stack, wind_stack, threshold: float):
+    """Hours with the NWS wind chill at or below ``threshold`` (the air temperature where wind chill is not defined)."""
+    t, v = np.asarray(t_stack, np.float64), np.asarray(wind_stack, np.float64)
+    wc = np.where((t <= WC_MAX_T_F) & (v > WC_MIN_WIND_MPH), wind_chill(t, v), t)
+    return hours_at_or_below(wc.astype(np.float32), threshold)
+
+
+def degree_hours(stack, above: bool = True, base: float = 32.0):
+    """Degree-hours (°F·h) above (melt) or below (freezing) ``base`` over the series, by the trapezoid rule on the hourly
+    temperatures; scaled to the full period if hours are missing."""
+    s = np.asarray(stack, np.float64)
+    e = np.maximum(s - base, 0.0) if above else np.maximum(base - s, 0.0)
+    seg = 0.5 * (e[:-1] + e[1:])
+    ok = np.isfinite(seg)
+    n = ok.sum(0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        out = np.where(n > 0, np.where(ok, seg, 0.0).sum(0) * (len(s) - 1) / n, np.nan)
+    return out.astype(np.float32)
+
+
+def precip_on_cold_surface(pcp, t_f):
+    """Liquid precipitation (in) that fell in hours when the 2 m air temperature (mean of the hour's two ends) was at or below
+    32 °F: water arriving on a frozen surface.  Where the air aloft is warm, this is freezing rain's footprint; it also counts
+    snow.  NaN where no hour is usable."""
+    pcp = np.asarray(pcp, np.float32)
+    t = np.asarray(t_f, np.float64)
+    n = pcp.shape[0] - 1
+    total = np.zeros(pcp.shape[1:], np.float32)
+    seen = np.zeros(pcp.shape[1:], bool)
+    for k in range(n):
+        mid = _mid_instants(t[k], t[k + 1])
+        usable = np.isfinite(mid) & np.isfinite(pcp[k])
+        total += np.where(usable & (mid <= 32.0), pcp[k], np.float32(0.0))
+        seen |= usable
+    total[~seen] = np.nan
+    return total

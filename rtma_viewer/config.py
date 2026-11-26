@@ -7,10 +7,11 @@ from typing import Callable
 import numpy as np
 
 from . import kinematics as kin
-from .derived import (FLIGHT_CATEGORIES, apparent_temperature, dewpoint_depression, flight_category, frostbite_category,
-                      hours_at_or_below, min_wind_chill, mixing_ratio, mslp, relative_humidity_field, relative_humidity_ice,
-                      sea_level_temperature, series_max, series_min, series_range, series_sum, threshold_crossings, frozen_precipitation, wet_bulb,
-                      wind_direction)
+from .derived import (FLIGHT_CATEGORIES, apparent_temperature, blizzard_hours, cold_pool, degree_hours, dewpoint_depression,
+                      flash_freeze, flight_category, freezing_fog, frostbite_category, frozen_precipitation, hours_at_or_above,
+                      hours_at_or_below, min_wind_chill, mixing_ratio, mslp, precip_on_cold_surface, radiational_cooling,
+                      relative_humidity_field, relative_humidity_ice, sea_level_temperature, series_max, series_min, series_range,
+                      series_sum, snowmaking_hours, threshold_crossings, wet_bulb, wet_snow_load, wind_chill_hours, wind_direction)
 
 
 # --------------------------------------------------------------------------- products
@@ -82,10 +83,15 @@ def _ceil_label(v: float) -> str:
 
 
 # --------------------------------------------------------------------------- variables
-G_TEMP, G_24H, G_PCP, G_WIND, G_PRESS, G_SKY, G_KIN, G_TERRAIN = ("Temperature & moisture", "Past 24 hours", "Precipitation",
-                                                                  "Wind", "Pressure", "Sky & visibility", "Surface kinematics",
-                                                                  "Terrain")
+G_TEMP, G_24H, G_HAZ, G_PCP, G_WIND, G_PRESS, G_SKY, G_KIN, G_TERRAIN = (
+    "Temperature & moisture", "Past 24 hours", "Winter hazard diagnostics", "Precipitation", "Wind", "Pressure",
+    "Sky & visibility", "Surface kinematics", "Terrain")
 FROSTBITE_CATEGORIES = ("None", "30 min", "10 min", "5 min")
+BLIZZARD_LABELS = ("0 h", "1 h", "2 h", "3 h", "4 h", "5 h", "6 h")
+FLASH_FREEZE_CATEGORIES = ("None", "Fell below 32 °F", "Flash freeze")
+FREEZING_FOG_CATEGORIES = ("None", "Favourable", "Dense")
+WET_SNOW_CATEGORIES = ("< 0.10 in", "≥ 0.10 in", "≥ 0.25 in", "+ gusts")
+RAD_COOL_CATEGORIES = ("None", "Clear or calm", "Clear and calm", "Ideal")
 
 
 @dataclass(frozen=True)
@@ -131,6 +137,11 @@ _PCP_NOTE = ("Liquid-equivalent precipitation analysed on the 2.5 km grid. RTMA 
              "quality-controlled, gauge-corrected Stage IV analysis and is re-made as River Forecast Centre data arrive. It is water, "
              "not snow depth, and it is an analysis of what fell, not a forecast. If some of the hourly analyses are missing the total "
              "adds up the ones that exist, says how many that was, and may therefore read low. ")
+
+_IND = ("An indicator of where surface conditions favour this, built from the analysed 2 m and 10 m fields: it cannot see the air "
+        "aloft, so use it with radar, soundings and the observations, not instead of them. ")
+
+_PCP_AVAIL = ("If some hourly precipitation analyses are missing it uses the ones that exist and says how many on the map. ")
 
 _FROZEN_NOTE = ("Liquid-equivalent frozen precipitation (snow, sleet and freezing rain together): the precipitation that fell while "
                 "the surface wet bulb was at or below 32 °F (average of the wet bulb at the start and end of each hour). It is water, not "
@@ -209,6 +220,97 @@ VARIABLES: dict[str, Variable] = {
                           derive=series_max, series=24, group=G_24H, changes=False,
                           note="Strongest 10 m gust among the hourly analyses in the last 24 hours (NWS legend). The analysis "
                                "gust is a diagnosed value, so treat peaks between analyses and at exposed summits with caution."),
+    # ---- counts and totals over the last 24-48 hours (from the cached hourly analyses)
+    "snowmk28": Variable("snowmk28", "Snowmaking hours", "Snowmaking Hours (Wet Bulb ≤ 28°F), Past 24 Hours", "h", "", "",
+                         requires=("temp", "dewpoint", "pressure"), derive=snowmaking_hours, series=24, group=G_24H, changes=False,
+                         show_period=False,
+                         note="Hours in the last 24 with the 2 m wet-bulb temperature at or below 28 °F, interpolating between the "
+                              "hourly analyses: the usual limit for ski-area snowmaking (colder and drier air makes snow more "
+                              "efficiently; near 28 °F it is marginal). The wet bulb accounts for humidity, which is why a dry 30 °F "
+                              "night can still be good. 24 = the whole day."),
+    "wchrs15": Variable("wchrs15", "Hours WC ≤ -15 °F", "Hours with Wind Chill ≤ -15°F, Past 24 Hours", "h", "", "",
+                        requires=("temp", "wind"), derive=lambda t, w: wind_chill_hours(t, w, -15.0), series=24, group=G_24H,
+                        changes=False, show_period=False,
+                        note="Hours in the last 24 with the NWS wind chill at or below -15 °F (the air temperature where wind chill "
+                             "is not defined). Offices use different wind chill advisory and warning thresholds, so treat -15 °F "
+                             "and -25 °F as reference levels, not your office's criteria."),
+    "wchrs25": Variable("wchrs25", "Hours WC ≤ -25 °F", "Hours with Wind Chill ≤ -25°F, Past 24 Hours", "h", "", "",
+                        requires=("temp", "wind"), derive=lambda t, w: wind_chill_hours(t, w, -25.0), series=24, group=G_24H,
+                        changes=False, show_period=False,
+                        note="Hours in the last 24 with the NWS wind chill at or below -25 °F. See the -15 °F map for the caveat "
+                             "about office-specific criteria."),
+    "gst40hrs": Variable("gst40hrs", "Hours gust ≥ 40 mph", "Hours with Wind Gust ≥ 40 mph, Past 24 Hours", "h", "", "",
+                         requires=("gust",), derive=lambda g: hours_at_or_above(g, 40.0), series=24, group=G_24H, changes=False,
+                         show_period=False,
+                         note="Hours in the last 24 with the analysed 10 m gust at or above 40 mph (wind advisory territory in "
+                              "much of the region; also a threshold for scattered tree and power-line damage). The analysis gust "
+                              "is diagnosed, so exposed summits and coasts are the least reliable."),
+    "gst58hrs": Variable("gst58hrs", "Hours gust ≥ 58 mph", "Hours with Wind Gust ≥ 58 mph, Past 24 Hours", "h", "", "",
+                         requires=("gust",), derive=lambda g: hours_at_or_above(g, 58.0), series=24, group=G_24H, changes=False,
+                         show_period=False,
+                         note="Hours in the last 24 with the analysed 10 m gust at or above 58 mph, the usual high wind warning "
+                              "gust level. Rare in the analysis; see the 40 mph map for the caveats."),
+    "pdh24": Variable("pdh24", "Melt degree-hours 24 h", "Positive Degree-Hours Above 32°F, Past 24 Hours", "°F·h", "", "",
+                      requires=("temp",), derive=degree_hours, series=24, group=G_24H, changes=False, show_period=False,
+                      note="Sum over the last 24 hours of how many °F the 2 m temperature was above 32 °F (a 40 °F day is about "
+                           "190 °F·h). A snowmelt index: the more degree-hours, the more melt, and so the more runoff and the faster "
+                           "snow-cover loss. It ignores sun, rain and wind, which add melt, and does not know whether snow is on "
+                           "the ground.", stat_decimals=0),
+    "pdh48": Variable("pdh48", "Melt degree-hours 48 h", "Positive Degree-Hours Above 32°F, Past 48 Hours", "°F·h", "", "",
+                      requires=("temp",), derive=degree_hours, series=48, group=G_24H, changes=False, show_period=False,
+                      note="Same as the 24-hour map over 48 hours: a snowmelt index for runoff and ice-jam awareness.",
+                      stat_decimals=0),
+    "fdh48": Variable("fdh48", "Freezing degree-hours 48 h", "Freezing Degree-Hours Below 32°F, Past 48 Hours", "°F·h", "", "",
+                      requires=("temp",), derive=lambda s: degree_hours(s, above=False), series=48, group=G_24H, changes=False,
+                      show_period=False,
+                      note="Sum over the last 48 hours of how many °F the 2 m temperature was below 32 °F (a day at 20 °F is "
+                           "about 290 °F·h). Drives river and lake ice growth and frost depth: large values mean persistent cold. "
+                           "Ice thickness also depends on snow cover and water movement, which this does not know about.",
+                      stat_decimals=0),
+    # ------------------------------------------------------------------ winter hazard diagnostics
+    "blizz": Variable("blizz", "Blizzard criteria", "Blizzard Criteria: Consecutive Hours Met, Past 6 Hours", "h", "", "",
+                      requires=("vis", "wind", "gust"), derive=blizzard_hours, series=5, group=G_HAZ, changes=False,
+                      show_period=False, categories=BLIZZARD_LABELS, labeler=lambda v: ("", "1", "2", "3", "4", "5", "6")[int(round(v))],
+                      note="Longest run of consecutive hourly analyses, in the last 6 hours, with visibility of 1/4 mile or less and "
+                           "sustained wind or gusts of 35 mph or more. The NWS blizzard definition needs this for 3 hours or more, so "
+                           "the red classes (3-6) meet it. Analysed visibility is coarse and often misses blowing snow in the open, "
+                           "so a miss here does not rule a blizzard out; check observations."),
+    "flashfrz": Variable("flashfrz", "Flash freeze", "Flash-Freeze Potential, Past 3 Hours", "", "", "",
+                         requires=("pcp1", "temp"), derive=flash_freeze, series=3, period_hours=3, partial_series=True,
+                         group=G_HAZ, changes=False, show_period=False, categories=FLASH_FREEZE_CATEGORIES,
+                         labeler=lambda v: ("", "F", "FF")[int(round(v))],
+                         note="Where the 2 m temperature fell from above to at or below 32 °F in the last 3 hours with liquid "
+                              "precipitation in that time (F), and where it fell 10 °F or more (FF): wet roads and surfaces "
+                              "freezing. " + _IND + _PCP_AVAIL),
+    "frzfog": Variable("frzfog", "Freezing fog / drizzle", "Freezing Fog or Drizzle Favourable", "", "", "",
+                       requires=("temp", "dewpoint", "vis", "ceiling"), derive=freezing_fog, group=G_HAZ, changes=False,
+                       categories=FREEZING_FOG_CATEGORIES, labeler=lambda v: ("", "ZF", "ZF+")[int(round(v))],
+                       note="2 m temperature at or below 32 °F, dew point depression of 2 °F or less, and visibility under 3 mi or a "
+                            "ceiling under 1,000 ft (Favourable); visibility under 1/2 mi is flagged Dense. Saturated, sub-freezing "
+                            "air with reduced visibility also describes falling snow, so read it next to radar. " + _IND),
+    "wetsnow": Variable("wetsnow", "Wet-snow load", "Wet-Snow Load Risk, Past 6 Hours", "", "", "",
+                        requires=("pcp1", "temp", "dewpoint", "pressure", "gust"), derive=wet_snow_load, series=6, period_hours=6,
+                        partial_series=True, group=G_HAZ, changes=False, show_period=False, categories=WET_SNOW_CATEGORIES,
+                        labeler=lambda v: ("", "1", "2", "3")[int(round(v))],
+                        note="Heavy, sticky snow that loads trees and power lines: liquid precipitation in hours with a wet bulb at "
+                             "or below 32 °F while the air was 31 °F or warmer, over 6 hours. Classes: under 0.10 in (none), at least "
+                             "0.10 in, at least 0.25 in, and at least 0.25 in with gusts of 35 mph or more. The thresholds are "
+                             "rules of thumb, not damage criteria. " + _IND + _PCP_AVAIL),
+    "radcool": Variable("radcool", "Radiational cooling", "Radiational Cooling Setup", "", "", "",
+                        requires=("cloud", "wind"), derive=radiational_cooling, group=G_HAZ, changes=False,
+                        categories=RAD_COOL_CATEGORIES, labeler=lambda v: ("", "1", "2", "3")[int(round(v))],
+                        note="Where the sky is clear and the wind light, the setup for the coldest nights, valley cold pools and "
+                             "frost hollows: one of clear (cloud 25 % or less) or calm (5 mph or less); both; and both with very "
+                             "clear and nearly calm air (10 % or less, 2 mph or less). Meaningful at night: in daytime clear, calm "
+                             "air heats up. Snow cover on the ground makes it more effective. " + _IND),
+    "coldpool": Variable("coldpool", "Cold pool / inversion", "Cold Pool (-) and Inversion (+): Temperature Minus Local Mean", "°F",
+                         "", "", requires=("slt", "terrain"), derive=cold_pool, group=G_HAZ, changes=False, diverging=True,
+                         decimals=0,
+                         note="Sea-level-adjusted temperature minus its average over the land within about 25 km. Negative (blue) "
+                              "means colder than the surroundings after the elevation effect is removed: valley cold pools, "
+                              "radiational cooling, cold-air damming; positive (red) means warmer, as on slopes above an "
+                              "inversion. Water is left out. Adjustment uses a standard lapse rate, so in a deep inversion the "
+                              "adjusted temperature of high ground reads warm. " + _IND),
     # ------------------------------------------------------------------ precipitation (hourly analysis files, summed)
     "pcp1": Variable("pcp1", "1 h precip", "1-Hour Precipitation Analysis", "in", "", "", _mm_to_in, source="pcp", group=G_PCP,
                      changes=False, pack=(0.0, 2000.0), decimals=2, stat_decimals=2, labeler=_pcp_label, show_period=False,
@@ -257,6 +359,15 @@ VARIABLES: dict[str, Variable] = {
                        requires=("pcp1", "temp", "dewpoint", "pressure"), derive=frozen_precipitation, series=48, period_hours=48,
                        partial_series=True, group=G_PCP, changes=False, decimals=2, stat_decimals=2, labeler=_pcp_label,
                        show_period=False, note=_FROZEN_NOTE),
+    "pcpcold24": Variable("pcpcold24", "24 h precip at T ≤ 32 °F", "24-Hour Precipitation at 2m Temperature ≤ 32°F", "in", "", "",
+                          requires=("pcp1", "temp"), derive=precip_on_cold_surface, series=24, period_hours=24,
+                          partial_series=True, group=G_PCP, changes=False, decimals=2, stat_decimals=2, labeler=_pcp_label,
+                          show_period=False,
+                          note="Liquid-equivalent precipitation that fell in hours when the 2 m air temperature (mean of the "
+                               "hour's two ends) was at or below 32 °F: water landing on a frozen surface. Where the air aloft was "
+                               "warm this is the footprint of freezing rain and freezing drizzle, but it counts snow and sleet too, "
+                               "and it cannot tell them apart. Compare with the frozen-precipitation maps, which use the wet bulb: "
+                               "where this is larger the air was sub-freezing but the wet bulb was not, meaning drier air. " + _PCP_AVAIL),
     # ------------------------------------------------------------------ wind
     "wind": Variable("wind", "Wind speed", "10m Wind Speed", "mph", "WIND", "10 m above ground", _ms_to_mph,
                      components=("UGRD", "VGRD"), group=G_WIND),
