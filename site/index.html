@@ -72,6 +72,8 @@
   tbody tr { cursor: pointer; }
   tbody tr:hover { background: var(--soft); }
   tbody tr[aria-selected="true"] { background: color-mix(in srgb, var(--accent) 14%, transparent); font-weight: 600; }
+  .linekey { display: flex; gap: 16px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+  .linekey i { display: inline-block; width: 22px; height: 3px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
   .note { color: var(--muted); font-size: 13px; margin: 14px 0 0; }
 
   #compare { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
@@ -274,9 +276,21 @@ function renderSingle(unit, change) {
     return tr;
   }));
   const vn = $("#vnote");
-  vn.hidden = !vm.note;
+  const lines = change ? [] : (vm.lines || []);
+  vn.hidden = !vm.note && !lines.length;
   vn.replaceChildren();
   if (vm.note) { const t = document.createElement("strong"); t.textContent = vm.long_name; vn.append(t, vm.note); }
+  if (lines.length) {                                    // key for the reference contours drawn on the map
+    const key = document.createElement("span");
+    key.className = "linekey";
+    for (const l of lines) {
+      const item = document.createElement("span"), sw = document.createElement("i");
+      sw.style.background = l.color;
+      item.append(sw, `${l.value} ${unit}`);
+      key.append(item);
+    }
+    vn.append(key);
+  }
   $("#blurb").textContent = `${prod().long_name}: ${prod().blurb}`;
 }
 
