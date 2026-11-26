@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>New England RTMA / URMA viewer</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%277%27 fill=%27%231f6feb%27/%3E%3Cpath d=%27M7 21l5-6 4 3 6-9 3 5%27 fill=%27none%27 stroke=%27white%27 stroke-width=%272.6%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27/%3E%3C/svg%3E">
-<meta name="description" content="Hourly RTMA and URMA surface analyses for New England: temperature, dew point, wind speed, gusts and apparent temperature, with 1/3/6/12/24-hour changes.">
+<meta name="description" content="Hourly RTMA and URMA surface analyses for New England: temperature, wet bulb, dew point, humidity, wind, pressure and MSLP, visibility, ceiling and cloud cover, with 1/3/6/12/24-hour changes.">
 <style>
   :root {
     color-scheme: light dark;
@@ -43,6 +43,11 @@
   .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
   .seg button:disabled { opacity: .4; cursor: not-allowed; }
   button:focus-visible, tr[tabindex]:focus-visible, .thumb:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .vgroups { display: flex; flex-wrap: wrap; gap: 8px 14px; }
+  .vgroup > small { display: block; font-size: 11px; color: var(--muted); margin: 0 0 2px 3px; }
+  .vnote { color: var(--ink); font-size: 13px; margin: 14px 0 0; padding: 10px 12px; background: var(--soft); border-radius: 8px; }
+  .vnote strong { display: block; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin-bottom: 2px; }
 
   main { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 20px; align-items: start; }
   .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; }
@@ -98,7 +103,7 @@
 
   <section class="controls" aria-label="Controls">
     <div class="group"><span>Product</span><div class="seg" id="seg-product" role="group" aria-label="Product"></div></div>
-    <div class="group"><span>Variable</span><div class="seg" id="seg-var" role="group" aria-label="Variable"></div></div>
+    <div class="group"><span>Variable</span><div class="vgroups" id="seg-var" role="group" aria-label="Variable"></div></div>
     <div class="group"><span>Current field · or change over the last</span><div class="seg" id="seg-int" role="group" aria-label="Time step"></div></div>
     <div class="group"><span>View</span><div class="seg" id="seg-view" role="group" aria-label="View"></div></div>
   </section>
@@ -113,6 +118,7 @@
         <thead><tr><th>Field</th><th id="th-lo">Low</th><th>Mean</th><th id="th-hi">High</th></tr></thead>
         <tbody id="rows"></tbody>
       </table>
+      <p class="vnote" id="vnote" hidden></p>
       <p class="note" id="blurb"></p>
     </aside>
   </main>
@@ -136,7 +142,8 @@ let data;
 const fmtDate = (iso, tz) => new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short", month: "short", day: "numeric",
                                 hour: "numeric", minute: "2-digit", timeZoneName: "short" }).format(new Date(iso));
 const intLabel = h => h === 0 ? "Current" : `${h} h`;
-const num = (v, signed) => v == null ? "—" : (signed && v > 0 ? "+" : "") + v.toFixed(1).replace("-", "−");
+const num = (v, signed) => v == null ? "—" : (signed && v > 0 ? "+" : "") + v.toFixed(digits()).replace("-", "−");
+const digits = () => ["ceiling", "terrain", "wdir"].includes(state.variable) ? 0 : 1;
 const varMeta = k => data.variables.find(v => v.key === k);
 const prod = () => data.products[state.product];
 const panel = (p = state.product, v = state.variable, h = state.interval) => data.products[p]?.panels?.[v]?.[String(h)];
@@ -152,6 +159,17 @@ function seg(el, items, current, onPick) {
   }));
 }
 
+function segGroups(el, vars, current, onPick) {
+  const names = [...new Set(vars.map(v => v.group || "Variables"))];
+  el.replaceChildren(...names.map(g => {
+    const wrap = document.createElement("div"), label = document.createElement("small"), inner = document.createElement("div");
+    wrap.className = "vgroup"; inner.className = "seg"; label.textContent = g;
+    seg(inner, vars.filter(v => (v.group || "Variables") === g).map(v => ({ value: v.key, label: v.label })), current, onPick);
+    wrap.append(label, inner);
+    return wrap;
+  }));
+}
+
 function readHash() {
   const [p, v, h, view] = location.hash.slice(1).split("/");
   if (data.products[p]) state.product = p;
@@ -161,7 +179,11 @@ function readHash() {
 }
 const writeHash = () => history.replaceState(null, "", `#${state.product}/${state.variable}/${state.interval}/${state.view === "compare" ? "compare" : "map"}`);
 
-function set(patch) { Object.assign(state, patch); writeHash(); render(); }
+function set(patch) {
+  Object.assign(state, patch);
+  if (!panel() && panel(state.product, state.variable, 0)) state.interval = 0;   // this variable has no such time step
+  writeHash(); render();
+}
 
 function render() {
   const P = prod(), unit = varMeta(state.variable).unit, change = state.interval > 0;
@@ -181,7 +203,7 @@ function render() {
   // controls
   seg($("#seg-product"), Object.entries(data.products).map(([k, p]) => ({ value: k, label: p.label, disabled: p.status !== "ok" })),
       state.product, v => set({ product: v }));
-  seg($("#seg-var"), data.variables.map(v => ({ value: v.key, label: v.label })), state.variable, v => set({ variable: v }));
+  segGroups($("#seg-var"), data.variables, state.variable, v => set({ variable: v }));
   seg($("#seg-int"), data.intervals.map(h => ({ value: h, label: intLabel(h), disabled: !panel(state.product, state.variable, h) })),
       state.interval, v => set({ interval: v }));
   seg($("#seg-view"), [{ value: "map", label: "Map" }, { value: "compare", label: "Compare all" }], state.view, v => set({ view: v }));
@@ -210,7 +232,8 @@ function renderSingle(unit, change) {
   $("#sum-title").textContent = `New England land area · ${intLabel(state.interval)}${change ? " change" : ""}`;
   $("#th-lo").textContent = change ? "Min" : "Low"; $("#th-hi").textContent = change ? "Max" : "High";
   const tile = (k, v) => `<div class="tile"><div class="k">${k}</div><div class="v">${num(v, change)}<span class="u">${unit}</span></div></div>`;
-  $("#tiles").innerHTML = p ? tile(lo, p.min) + tile("Average", p.mean) + tile(hi, p.max) : "";
+  const vm = varMeta(state.variable);
+  $("#tiles").innerHTML = !p ? "" : vm.circular ? tile("Mean direction", p.mean) : tile(lo, p.min) + tile("Average", p.mean) + tile(hi, p.max);
 
   // table view
   $("#rows").replaceChildren(...data.intervals.map(h => {
@@ -224,6 +247,10 @@ function renderSingle(unit, change) {
     } else tr.style.opacity = .4;
     return tr;
   }));
+  const vn = $("#vnote");
+  vn.hidden = !vm.note;
+  vn.replaceChildren();
+  if (vm.note) { const t = document.createElement("strong"); t.textContent = vm.long_name; vn.append(t, vm.note); }
   $("#blurb").textContent = `${prod().long_name}: ${prod().blurb}`;
 }
 
@@ -247,8 +274,7 @@ function preload() {
   // warm the cache for every step of the chosen variable, then the rest when idle
   const queue = [];
   for (const h of data.intervals) { const p = panel(state.product, state.variable, h); if (p) queue.push(src(p)); }
-  const rest = () => { for (const [pk, P] of Object.entries(data.products)) for (const v of Object.keys(P.panels || {}))
-      for (const h of data.intervals) { const p = panel(pk, v, h); if (p) queue.push(src(p)); } };
+  const rest = () => { for (const v of Object.keys(prod().panels || {})) { const p = panel(state.product, v, 0); if (p) queue.push(src(p)); } };
   (window.requestIdleCallback || setTimeout)(() => { rest(); queue.forEach(u => { if (!preloaded.has(u)) { preloaded.add(u); new Image().src = u; } }); });
 }
 
