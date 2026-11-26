@@ -1,7 +1,7 @@
 import numpy as np
 
 from rtma_viewer import colors as c
-from rtma_viewer.config import INTERVALS, VARIABLES
+from rtma_viewer.config import INTERVALS, PANEL_VARIABLES as VARIABLES
 
 
 def lightness(style):
@@ -84,3 +84,76 @@ def test_apparent_ramp_joins_wind_chill_and_heat_index_legends():
     lab = c.srgb_to_oklab(s.colors[np.arange(len(s.colors))])
     bridge = lab[(35 + 60) // 5 + 1:(75 + 60) // 5 + 2]
     assert np.all(np.linalg.norm(np.diff(bridge, axis=0), axis=1) < 0.09)
+
+
+# ------------------------------------------------------------------------------------------ styles for the added variables
+def test_every_style_is_opaque_at_and_beyond_its_ends():
+    """Regression: with extend="neither", a value exactly at the top level (RH / cloud cover = 100, wind direction = 360)
+    used to map to a transparent pixel."""
+    for var in VARIABLES:
+        for h in (0, 6):
+            s = c.style_for(var, h)
+            cmap, norm = s.cmap_norm()
+            for v in (s.levels[0], s.levels[-1], s.levels[0] - 1e-3, s.levels[-1] + 1e-3, s.levels[0] - 500, s.levels[-1] + 500):
+                assert cmap(norm(np.array([v])))[0][3] == 1.0, (var, h, v)
+    for key in ("rh", "cloud", "wdir"):                                           # the exact-top value takes the top colour
+        s = c.style_for(key, 0)
+        cmap, norm = s.cmap_norm()
+        assert np.allclose(cmap(norm(np.array([s.levels[-1]])))[0][:3], s.colors[-1])
+
+
+def test_every_variable_has_a_style_with_consistent_shape():
+    for key in VARIABLES:
+        s = c.style_for(key, 0)
+        n_bins = len(s.levels) - 1
+        extra = {"neither": 0, "min": 1, "max": 1, "both": 2}[s.extend]
+        assert len(s.colors) == n_bins + extra, key
+        assert np.all(np.diff(s.levels) > 0), key
+        assert np.all((s.colors >= 0) & (s.colors <= 1)), key
+        cmap, _ = s.cmap_norm()                                                    # matplotlib accepts it
+        assert cmap.N == n_bins
+
+
+def test_wet_bulb_shares_the_temperature_legend():
+    a, b = c.style_for("temp", 0), c.style_for("wetbulb", 0)
+    assert np.array_equal(a.levels, b.levels) and np.allclose(a.colors, b.colors) and 32 in b.levels
+
+
+def test_pressure_ramps():
+    L = lightness(c.style_for("pressure", 0))
+    assert np.all(np.diff(L) >= -2e-3)                                            # sequential: monotone lightness
+    s = c.style_for("mslp", 0)
+    assert s.levels[0] == 940 and s.levels[-1] == 1060 and 1012 in s.levels and 1014 in s.levels      # 2 mb bins about ~1013
+
+
+def test_pressure_changes_use_finer_levels_with_the_same_shape():
+    for key in ("pressure", "mslp"):
+        s = c.style_for(key, 3)
+        assert list(s.levels) == [-30, -24, -20, -16, -12, -9, -6, -4, -3, -2, -1, -0.5,
+                                  0.5, 1, 2, 3, 4, 6, 9, 12, 16, 20, 24, 30]
+        assert np.allclose(s.colors, c.style_for("temp", 3).colors)                # same 25 colours, white centre
+        assert np.array_equal(s.levels, c.style_for(key, 24).levels)               # still identical across intervals
+
+
+def test_wind_direction_style_is_a_cyclic_16_point_compass():
+    s = c.style_for("wdir", 0)
+    assert s.levels[0] == 0 and s.levels[-1] == 360 and len(s.colors) == 17
+    assert np.allclose(s.colors[0], s.colors[-1])                                  # north at both ends of the bar
+    assert not s.uniform and s.tick_labels[0] == "N" and s.tick_labels[90] == "E" and s.tick_labels[270] == "W"
+    cmap, norm = s.cmap_norm()
+    col = lambda deg: tuple(np.round(cmap(norm(np.array([deg])))[0][:3], 3))
+    assert col(0.0) == col(5.0) == col(355.0) == col(360.0)                        # 348.75..11.25 is all "N"
+    assert col(90.0) != col(180.0) != col(270.0)
+
+
+def test_visibility_and_ceiling_use_aviation_style_breaks():
+    v, ce = c.style_for("vis", 0), c.style_for("ceiling", 0)
+    assert list(v.levels) == [0, 0.25, 0.5, 1, 2, 3, 5, 7, 9.5] and v.extend == "max"
+    assert list(ce.levels) == [0, 200, 500, 1000, 2000, 3000, 5000, 8000, 12000]
+    assert 500 in ce.levels and 1000 in ce.levels and 3000 in ce.levels          # LIFR / IFR / MVFR boundaries are bin edges
+
+
+def test_terrain_style_has_a_sea_level_bin():
+    s = c.style_for("terrain", 0)
+    assert s.levels[0] == 0 and s.levels[1] == 20 and s.levels[-1] == 6000
+    assert s.colors[0][2] > s.colors[0][0]                                         # sea: bluish, not the lowland green
