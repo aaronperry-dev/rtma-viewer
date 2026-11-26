@@ -288,7 +288,7 @@ def panel_text(product: Product, var: Variable, interval: int, valid: datetime, 
     """(left bold, left regular, right bold, right regular) - e.g. 'RTMA' ': 2m Temperature (°F)' 'Valid' ': 17:00z Thu Nov 5 2026'."""
     chg = f" {interval}-hr Change" if interval else ""
     right = f": {_z(valid)} {valid.year}" + (f"  (vs {_z(ref)})" if ref else "")
-    if var.series:                                            # period products: say what window they summarise
+    if var.series and var.show_period:                                            # period products: say what window they summarise
         right += f"  (past {var.series} h)"
     unit = f" ({var.unit})" if var.unit else ""
     return product.label, f": {var.long_name}{chg}{unit}", "Valid", right

@@ -26,6 +26,7 @@ class FieldStore:
         self.src = S3Source(client, product)
         self.dir = Path(cache_dir) / product.key
         self.grid: grib.Grid | None = grib.Grid.load(self.dir / "grid.npz")
+        self.pcp_grid: grib.Grid | None = grib.Grid.load(self.dir / "pcp_grid.npz")   # same lattice, but NOAA crops it differently
         self.workers = workers
         self.stats = Counter()
 
@@ -80,20 +81,34 @@ class FieldStore:
                 pass
 
     # ---------------------------------------------------------------- loading
-    def load(self, jobs: list[tuple[datetime, Variable]]) -> dict[tuple[datetime, str], np.ndarray | None]:
-        """Return display-unit fields (float32, window-shaped) for each (cycle, variable); None if unavailable."""
+    def load(self, jobs: list[tuple[datetime, Variable]], now: datetime | None = None
+             ) -> dict[tuple[datetime, str], np.ndarray | None]:
+        """Return display-unit fields (float32, window-shaped) for each (cycle, variable); None if unavailable.
+
+        ``now`` (UTC) enables the re-download of recent cached precipitation (``Product.pcp_refresh_hours``): the hourly
+        precipitation analyses are re-made for a while after they are first published."""
         out: dict[tuple[datetime, str], np.ndarray | None] = {}
         todo: list[tuple[datetime, Variable]] = []
+        stale: dict[tuple[datetime, str], np.ndarray] = {}        # cached values to fall back on if a refresh finds nothing
         for cyc, var in dict.fromkeys(jobs):
             p = self._path(cyc, var)
             if self.grid is not None and p.exists():
                 try:
-                    out[(cyc, var.key)] = self._decode(var, np.load(p))
-                    self.stats["cache_hits"] += 1
-                    continue
+                    cached = self._decode(var, np.load(p))
                 except Exception:
                     p.unlink(missing_ok=True)
+                else:
+                    if (var.source == "pcp" and now is not None
+                            and now - cyc < timedelta(hours=self.product.pcp_refresh_hours)):
+                        stale[(cyc, var.key)] = cached
+                        todo.append((cyc, var))
+                        continue
+                    out[(cyc, var.key)] = cached
+                    self.stats["cache_hits"] += 1
+                    continue
             todo.append((cyc, var))
+        pcp_todo = [(c, v) for c, v in todo if v.source == "pcp"]
+        todo = [(c, v) for c, v in todo if v.source != "pcp"]
 
         # 1) which messages do we need?  (cycle, grib var, level)
         wanted: dict[tuple[datetime, str, str], None] = {}
@@ -152,4 +167,49 @@ class FieldStore:
             path.parent.mkdir(parents=True, exist_ok=True)
             np.save(path, stored)
             out[(cyc, var.key)] = self._decode(var, stored)    # same values a later cache hit will return
+
+        self._load_precip(pcp_todo, out, stale)             # after the analysis fields: it needs their grid to check its own
         return out
+
+    # ---------------------------------------------------------------- hourly precipitation files
+    def _pcp_window(self, vals: np.ndarray, geo) -> np.ndarray | None:
+        """Cut the New England window out of a precipitation grid.  The precipitation files are on the same 2.5 km lattice as
+        the analysis files but cropped differently, so the window has its own indices; it is found from the coordinates once and
+        checked against the analysis window - a different lattice would need resampling, which we refuse to fake."""
+        if self.grid is None:
+            return None
+        if self.pcp_grid is None and geo is not None:
+            cand = grib.make_window(*geo)
+            ok = (cand.lat.shape == self.grid.lat.shape and np.abs(cand.lat - self.grid.lat).max() < 5e-4
+                  and np.abs(cand.lon - self.grid.lon).max() < 5e-4)
+            if not ok:
+                log.error("%s: precipitation grid does not match the analysis grid; skipping precipitation", self.product.key)
+                return None
+            self.pcp_grid = cand
+            self.pcp_grid.save(self.dir / "pcp_grid.npz")
+        if self.pcp_grid is None:
+            return None
+        win = vals[self.pcp_grid.slices]
+        return win if win.shape == self.grid.lat.shape else None
+
+    def _load_precip(self, todo, out, stale):
+        if not todo:
+            return
+        with ThreadPoolExecutor(self.workers) as pool:
+            blobs = list(pool.map(lambda cv: self.src.fetch_pcp(cv[0]), todo))
+        self.stats["pcp_files_fetched"] += sum(b is not None for b in blobs)
+        for (cyc, var), blob in zip(todo, blobs):
+            key = (cyc, var.key)
+            if blob is None:                                # not published: keep what the cache had, if anything
+                out[key] = stale.get(key)
+                continue
+            vals, geo = grib.decode(blob, want_geometry=self.pcp_grid is None)
+            win = self._pcp_window(vals, geo)
+            if win is None:
+                out[key] = stale.get(key)
+                continue
+            stored = self._encode(var, var.convert(win))
+            path = self._path(cyc, var)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            np.save(path, stored)
+            out[key] = self._decode(var, stored)

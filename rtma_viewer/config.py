@@ -9,7 +9,7 @@ import numpy as np
 from . import kinematics as kin
 from .derived import (FLIGHT_CATEGORIES, apparent_temperature, dewpoint_depression, flight_category, frostbite_category,
                       hours_at_or_below, min_wind_chill, mixing_ratio, mslp, relative_humidity_field, relative_humidity_ice,
-                      sea_level_temperature, series_max, series_min, series_range, threshold_crossings, wet_bulb,
+                      sea_level_temperature, series_max, series_min, series_range, series_sum, threshold_crossings, frozen_precipitation, wet_bulb,
                       wind_direction)
 
 
@@ -23,16 +23,20 @@ class Product:
     prefix: str          # e.g. "rtma2p5" -> rtma2p5.YYYYMMDD/rtma2p5.tHHz.2dvaranl_ndfd.grb2*
     lookback_hours: int  # how far back to search for the newest published cycle
     blurb: str
+    pcp_suffix: str = ""        # hourly precipitation analysis file: {prefix}.YYYYMMDD/{prefix}.YYYYMMDDHH.{pcp_suffix}
+    pcp_refresh_hours: int = 0  # cached hourly precipitation younger than this is re-downloaded each run (later re-makes)
 
 
 PRODUCTS: dict[str, Product] = {
     "rtma": Product(
         "rtma", "RTMA", "Real-Time Mesoscale Analysis", "noaa-rtma-pds", "rtma2p5", 6,
         "NOAA/NCEP 2.5 km hourly surface analysis. Available ~35-45 min after the valid hour.",
+        pcp_suffix="pcp.184.grb2", pcp_refresh_hours=3,
     ),
     "urma": Product(
         "urma", "URMA", "UnRestricted Mesoscale Analysis", "noaa-urma-pds", "urma2p5", 12,
         "Same 2.5 km grid as RTMA, but run later with more observations. Lags RTMA by a few hours.",
+        pcp_suffix="pcp_01h.wexp.grb2", pcp_refresh_hours=24,
     ),
 }
 
@@ -53,6 +57,14 @@ def _pa_to_mb(a):
     return a / 100.0
 
 
+def _mm_to_in(a):
+    return np.maximum(a, 0.0) / 25.4          # kg m-2 of water = mm; tiny negative analysis values are noise
+
+
+def _pcp_label(v: float) -> str:
+    return "" if v < 0.005 else f"{v:.2f}"    # dry stations stay unlabelled: a map full of 0.00 says nothing
+
+
 def _m_to_ft(a):
     return a * FT_PER_M
 
@@ -70,8 +82,9 @@ def _ceil_label(v: float) -> str:
 
 
 # --------------------------------------------------------------------------- variables
-G_TEMP, G_24H, G_WIND, G_PRESS, G_SKY, G_KIN, G_TERRAIN = ("Temperature & moisture", "Past 24 hours", "Wind", "Pressure",
-                                                            "Sky & visibility", "Surface kinematics", "Terrain")
+G_TEMP, G_24H, G_PCP, G_WIND, G_PRESS, G_SKY, G_KIN, G_TERRAIN = ("Temperature & moisture", "Past 24 hours", "Precipitation",
+                                                                  "Wind", "Pressure", "Sky & visibility", "Surface kinematics",
+                                                                  "Terrain")
 FROSTBITE_CATEGORIES = ("None", "30 min", "10 min", "5 min")
 
 
@@ -106,7 +119,15 @@ class Variable:
     categories: tuple[str, ...] = ()   # integer-coded classes 0..n-1 (flight category ...): shown as area shares, not min / max
     stat_decimals: int = 1             # digits of the low / mean / high statistics on the page
     lines: tuple[tuple[float, str], ...] = ()   # (value, colour) reference contours drawn over the current-field map
+    source: str = "idx"                # "idx": a message of the 2dvaranl file (byte range); "pcp": the hourly precipitation file
+    min_series_fraction: float | None = None   # share of the hourly inputs a series product needs (None: build.MIN_SERIES_FRACTION)
+    show_period: bool = True           # header says "(past N h)" for series products (off when the title already names the period)
 
+
+_PCP_NOTE = ("Liquid-equivalent precipitation analysed on the 2.5 km grid. RTMA uses the radar-only MRMS estimate (about 15 min after "
+             "the hour, no gauge correction - radar is least reliable in snow, in the mountains and at long range); URMA uses the "
+             "quality-controlled, gauge-corrected Stage IV analysis and is re-made as River Forecast Centre data arrive. It is water, "
+             "not snow depth, and it is an analysis of what fell, not a forecast. ")
 
 VARIABLES: dict[str, Variable] = {
     # ------------------------------------------------------------------ temperature & moisture
@@ -179,6 +200,39 @@ VARIABLES: dict[str, Variable] = {
                           derive=series_max, series=24, group=G_24H, changes=False,
                           note="Strongest 10 m gust among the hourly analyses in the last 24 hours (NWS legend). The analysis "
                                "gust is a diagnosed value, so treat peaks between analyses and at exposed summits with caution."),
+    # ------------------------------------------------------------------ precipitation (hourly analysis files, summed)
+    "pcp1": Variable("pcp1", "1 h precip", "1-Hour Precipitation Analysis", "in", "", "", _mm_to_in, source="pcp", group=G_PCP,
+                     changes=False, pack=(0.0, 2000.0), decimals=2, stat_decimals=2, labeler=_pcp_label, show_period=False,
+                     note=_PCP_NOTE + "Water falling in the hour ending at the valid time."),
+    "pcp3": Variable("pcp3", "3 h precip", "3-Hour Precipitation Analysis", "in", "", "", requires=("pcp1",),
+                      derive=series_sum, series=2, group=G_PCP, changes=False, decimals=2, stat_decimals=2,
+                      labeler=_pcp_label, show_period=False, min_series_fraction=1.0,
+                      note=_PCP_NOTE + "Sum of the 3 hourly analyses ending at the valid time; blank where any of them is missing."),
+    "pcp6": Variable("pcp6", "6 h precip", "6-Hour Precipitation Analysis", "in", "", "", requires=("pcp1",),
+                      derive=series_sum, series=5, group=G_PCP, changes=False, decimals=2, stat_decimals=2,
+                      labeler=_pcp_label, show_period=False, min_series_fraction=1.0,
+                      note=_PCP_NOTE + "Sum of the 6 hourly analyses ending at the valid time; blank where any of them is missing."),
+    "pcp12": Variable("pcp12", "12 h precip", "12-Hour Precipitation Analysis", "in", "", "", requires=("pcp1",),
+                      derive=series_sum, series=11, group=G_PCP, changes=False, decimals=2, stat_decimals=2,
+                      labeler=_pcp_label, show_period=False, min_series_fraction=1.0,
+                      note=_PCP_NOTE + "Sum of the 12 hourly analyses ending at the valid time; blank where any of them is missing."),
+    "pcp24": Variable("pcp24", "24 h precip", "24-Hour Precipitation Analysis", "in", "", "", requires=("pcp1",),
+                      derive=series_sum, series=23, group=G_PCP, changes=False, decimals=2, stat_decimals=2,
+                      labeler=_pcp_label, show_period=False, min_series_fraction=1.0,
+                      note=_PCP_NOTE + "Sum of the 24 hourly analyses ending at the valid time; blank where any of them is missing."),
+    "pcp48": Variable("pcp48", "48 h precip", "48-Hour Precipitation Analysis", "in", "", "", requires=("pcp1",),
+                      derive=series_sum, series=47, group=G_PCP, changes=False, decimals=2, stat_decimals=2,
+                      labeler=_pcp_label, show_period=False, min_series_fraction=1.0,
+                      note=_PCP_NOTE + "Sum of the 48 hourly analyses ending at the valid time; blank where any of them is missing."),
+    "fpcp24": Variable("fpcp24", "24 h frozen precip", "24-Hour Precipitation, Wet Bulb at or Below 32°F", "in", "", "",
+                       requires=("pcp1", "temp", "dewpoint", "pressure"), derive=frozen_precipitation, series=24, group=G_PCP,
+                       changes=False, decimals=2, stat_decimals=2, labeler=_pcp_label, show_period=False,
+                       min_series_fraction=1.0,
+                       note="The part of the last 24 hours' liquid-equivalent precipitation that fell while the surface wet bulb "
+                            "was at or below 32 °F (average of the wet bulb at the start and end of each hour): snow, sleet or "
+                            "freezing rain. It is a rough guide, not a snowfall map - it ignores temperatures aloft (rain can fall "
+                            "through a cold surface layer), snow-to-liquid ratios and melting. Inches of water; a 10:1 snow-to-liquid "
+                            "ratio is the textbook average, higher for cold dry snow and lower for wet snow. " + _PCP_NOTE),
     # ------------------------------------------------------------------ wind
     "wind": Variable("wind", "Wind speed", "10m Wind Speed", "mph", "WIND", "10 m above ground", _ms_to_mph,
                      components=("UGRD", "VGRD"), group=G_WIND),

@@ -105,13 +105,27 @@ class DemoGrid:
             "VIS": vis, "CEIL": ceil, "TCDC": np.clip(20 + 80 * cloudy + 10 * self.n[2], 0, 100),
         }
 
-    def message(self, values: np.ndarray, cycle: datetime) -> bytes:
+    def precip_mm(self, cycle: datetime, urma: bool = False) -> np.ndarray:
+        """Synthetic hourly precipitation (mm) in a band ahead of the front, dry elsewhere; URMA-like NaN offshore."""
+        th = (cycle - EPOCH).total_seconds() / 3600
+        s = (self.xkm - (-500 + 30 * (th % 34))) / 110.0         # a band that sweeps across the grid every ~34 h, whatever the date
+        mm = 3.0 * np.exp(-(s - 0.4) ** 2 / 1.4) * np.clip(1 + 0.7 * self.n[1], 0, None) * (self.n[2] > -0.4)
+        mm = np.where(mm < 0.06, 0.0, mm)
+        return np.where(self.xkm > 450, np.nan, mm) if urma else mm
+
+    def message(self, values: np.ndarray, cycle: datetime, crop: tuple[int, int] | None = None) -> bytes:
+        """One GRIB2 message; ``crop=(j0, i0)`` writes the sub-grid starting at that row / column (NOAA's precipitation files are
+        the same lattice as the analysis files but cropped differently).  NaN values are written as a bitmap."""
         import eccodes as ec
+        j0, i0 = crop or (0, 0)
+        values = values[j0:, i0:]
+        ny, nx = values.shape
+        first = self.proj(self.x0 + i0 * DX, self.y0 + j0 * DX, inverse=True)
         g = ec.codes_grib_new_from_samples("GRIB2")
         ec.codes_set(g, "gridDefinitionTemplateNumber", 30)
-        keys = dict(shapeOfTheEarth=6, Nx=self.nx, Ny=self.ny,
-                    latitudeOfFirstGridPointInDegrees=self.first[1],
-                    longitudeOfFirstGridPointInDegrees=self.first[0] % 360,
+        keys = dict(shapeOfTheEarth=6, Nx=nx, Ny=ny,
+                    latitudeOfFirstGridPointInDegrees=first[1],
+                    longitudeOfFirstGridPointInDegrees=first[0] % 360,
                     LoVInDegrees=265.0, LaDInDegrees=25.0, Latin1InDegrees=25.0, Latin2InDegrees=25.0,
                     DxInMetres=DX, DyInMetres=DX, resolutionAndComponentFlags=8, latitudeOfSouthernPoleInDegrees=-90.0,
                     longitudeOfSouthernPoleInDegrees=0.0, iScansNegatively=0, jScansPositively=1,
@@ -119,7 +133,12 @@ class DemoGrid:
                     packingType="grid_simple", bitsPerValue=14)
         for k, v in keys.items():
             ec.codes_set(g, k, v)
-        ec.codes_set_values(g, values.ravel().astype(np.float64))
+        flat = values.ravel().astype(np.float64)
+        if np.isnan(flat).any():
+            ec.codes_set(g, "bitmapPresent", 1)
+            ec.codes_set(g, "missingValue", 9999.0)
+            flat = np.where(np.isnan(flat), 9999.0, flat)
+        ec.codes_set_values(g, flat)
         try:
             return ec.codes_get_message(g)
         finally:
@@ -129,6 +148,8 @@ class DemoGrid:
 class FakeS3:
     """Implements the three boto3 calls the pipeline uses."""
     _KEY = re.compile(r"^(?P<p>[a-z0-9]+)\.(?P<d>\d{8})/(?P=p)\.t(?P<h>\d{2})z\.2dvaranl_ndfd\.grb2_wexp(?P<idx>\.idx)?$")
+    _PCP_KEY = re.compile(r"^(?P<p>[a-z0-9]+)\.(?P<d>\d{8})/(?P=p)\.(?P<dh>\d{10})\.(?:pcp\.184\.grb2|pcp_01h\.wexp\.grb2)$")
+    PCP_CROP = (10, 15)      # (rows, columns) cut off the demo grid's south-west corner, like NOAA's cropped precipitation grid
 
     def __init__(self, now: datetime, urma_lag_hours: int = 3, missing: set[tuple[str, int]] | None = None):
         self.now = now.replace(minute=0, second=0, microsecond=0)
@@ -138,6 +159,7 @@ class FakeS3:
         self._files: OrderedDict = OrderedDict()
         self._lock = threading.Lock()
         self.range_requests: list[tuple[str, str | None]] = []
+        self.pcp_requests: list[str] = []
 
     def _cycle_ok(self, prefix: str, cycle: datetime) -> bool:
         lag = self.lag if prefix.startswith("urma") else 0
@@ -170,6 +192,15 @@ class FakeS3:
         return {"Contents": [{"Key": Prefix + ".grb2_wexp"}, {"Key": Prefix + ".grb2_wexp.idx"}]}
 
     def get_object(self, Bucket, Key, Range=None, **_):
+        pm = self._PCP_KEY.match(Key)
+        if pm:                                             # hourly precipitation file: a single whole-file message, own crop
+            cyc = datetime.strptime(pm["dh"], "%Y%m%d%H").replace(tzinfo=timezone.utc)
+            hrs_before = int((self.now - cyc).total_seconds() // 3600)
+            if ("pcp:" + pm["p"], hrs_before) in self.missing or hrs_before < 0:
+                raise KeyError(Key)
+            self.pcp_requests.append(Key)
+            return {"Body": io.BytesIO(self.grid.message(self.grid.precip_mm(cyc, pm["p"].startswith("urma")), cyc,
+                                                         crop=self.PCP_CROP))}
         m = self._KEY.match(Key)
         if not m:
             raise KeyError(Key)

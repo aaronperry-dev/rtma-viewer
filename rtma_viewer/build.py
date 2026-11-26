@@ -32,7 +32,8 @@ def series_inputs(fields: dict, var, valid: datetime):
     planes for hours that are missing for *any* input.  None if too few hours are available."""
     cols = [[fields.get((valid - timedelta(hours=i), k)) for i in range(var.series + 1)] for k in var.requires]
     ok = [all(c[i] is not None for c in cols) for i in range(var.series + 1)]
-    if sum(ok) < MIN_SERIES_FRACTION * (var.series + 1) or not ok[0]:
+    need = MIN_SERIES_FRACTION if var.min_series_fraction is None else var.min_series_fraction
+    if sum(ok) < need * (var.series + 1) - 1e-9 or not ok[0]:
         return None
     blank = np.full(next(c[0] for c in cols).shape, np.nan, np.float32)
     return [np.stack([c[i] if ok[i] else blank for i in range(len(ok))]) for c in cols]
@@ -52,7 +53,7 @@ def build_product(product, client, now, out: Path, cache: Path, layers, dpi: int
     need = hours_needed()                                 # only the cycles each variable's panels (and derived inputs) use
     jobs = sorted(((cycle - timedelta(hours=h), SOURCE_VARIABLES[k]) for k, hrs in need.items() for h in hrs),
                   key=lambda j: j[0], reverse=True)       # newest cycle first: one GRIB inventory read serves all its variables
-    fields = store.load(jobs)
+    fields = store.load(jobs, now)
     for var in SOURCE_VARIABLES.values():                 # static fields (terrain) are valid at every time
         if var.static:
             for h in INTERVALS:

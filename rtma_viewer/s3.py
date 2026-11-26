@@ -104,6 +104,30 @@ class S3Source:
         self._located[cycle] = result
         return result
 
+    def pcp_key(self, cycle: datetime) -> str:
+        p = self.product
+        return f"{p.prefix}.{cycle:%Y%m%d}/{p.prefix}.{cycle:%Y%m%d%H}.{p.pcp_suffix}"
+
+    def fetch_pcp(self, cycle: datetime) -> bytes | None:
+        """The hourly precipitation analysis for a cycle: one GRIB2 message in a small (~0.7 MB) file, fetched whole.
+        None if it is not published (yet), without a warning for the ordinary "no such key" case."""
+        if not self.product.pcp_suffix:
+            return None
+        key = self.pcp_key(cycle)
+        try:
+            data = self._get(key)
+        except Exception as exc:
+            code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
+            if isinstance(exc, KeyError) or code in ("NoSuchKey", "404", "NotFound"):
+                log.debug("%s: %s not published", self.product.key, key)
+            else:
+                log.warning("%s: fetching %s failed: %s", self.product.key, key, exc)
+            return None
+        if data[:4] != b"GRIB":
+            log.warning("%s: %s is not a GRIB file", self.product.key, key)
+            return None
+        return data
+
     def _get(self, key: str, byte_range: str | None = None) -> bytes:
         kwargs = {"Bucket": self.product.bucket, "Key": key}
         if byte_range:

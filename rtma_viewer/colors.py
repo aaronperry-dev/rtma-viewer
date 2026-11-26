@@ -336,6 +336,21 @@ def crossings_style() -> Style:
     return st
 
 
+# Liquid-equivalent precipitation, inches: the same fixed levels for every period (1 h ... 48 h) so a colour always means the same
+# amount.  Near-white for under 0.01 in, then greens (light), blues (moderate), purples / magenta (heavy), red -> maroon (extreme).
+_PCP_LEVELS = [0, 0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0]
+_PCP_COLORS = ["#f4f6f6",                                                               # < 0.01 (none)
+               "#c7efb8", "#8fdc8a", "#4bbf63", "#1f9a55",                              # 0.01 .. 0.50
+               "#5bc0eb", "#2b8ad8", "#1f55bd", "#3c2f9e",                              # 0.50 .. 2
+               "#7b2fb5", "#b02bb0", "#e0309a",                                         # 2 .. 6
+               "#e8453c", "#a51f24",                                                    # 6 .. 10
+               "#5c0f1c"]                                                               # 10+
+
+
+def precip_style() -> Style:
+    return _custom(_PCP_LEVELS, _PCP_COLORS, "max", ticks=_PCP_LEVELS[1:], tick_fontsize=10.5)
+
+
 def mixing_ratio_style() -> Style:
     levels = [0, 0.25, 0.5, 0.75, 1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10, 12, 16]
     centers = np.array(levels[:-1]) + np.diff(levels) / 2
@@ -371,6 +386,8 @@ _ABS = {
     "wcmin24": apparent_style,                                              # NWS "24-Hour Minimum Wind Chill" legend
     "gustmax24": wind_style,
     "frostbite": frostbite_style,
+    "pcp1": precip_style, "pcp3": precip_style, "pcp6": precip_style, "pcp12": precip_style, "pcp24": precip_style,
+    "pcp48": precip_style, "fpcp24": precip_style,
     "pgrad": lambda: sequential_style(PGRAD_MB, 0, 5, 0.25, 1, "max"),
     "fltcat": flight_category_style,
     "tadv": lambda: diverging_style([-30, -20, -12, -8, -5, -3, -1, 1, 3, 5, 8, 12, 20, 30]),
