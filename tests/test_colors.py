@@ -8,18 +8,24 @@ def lightness(style):
     return c.srgb_to_oklab(style.colors)[:, 0]
 
 
-def test_sequential_ramps_are_monotone_in_lightness():
-    for key in ("dewpoint",):
-        L = lightness(c.style_for(key, 0))
-        assert np.all(np.diff(L) <= 2e-3), key
+def test_temperature_uses_the_wpc_max_min_legend():
+    for key in ("temp", "dewpoint", "wetbulb", "slt", "tmax24", "tmin24"):
+        s = c.style_for(key, 0)
+        assert list(s.levels) == list(range(-40, 101, 5)) and s.extend == "both", key      # 5 F bins, under + over colours
+        assert len(s.colors) == len(s.levels) + 1                                           # 28 bins + under + over
+        h = hexes(s)
+        # colours read off the WPC colour bar: under -40, the white -35..-30 bin, 30-35 teal, 70-75 pale yellow, 100+ red
+        assert h[0] == "#ff71de" and h[2] == "#ffffff" and h[1] == "#ffbee7"
+        assert h[15] == "#31cfc6" and h[8] == "#10007b" and h[23] == "#ffffb5" and h[-1] == "#e71818"
+        cmap, norm = s.cmap_norm()
+        assert cmap.N == len(s.levels) - 1
+        assert norm(31.0) == norm(34.9) != norm(35.1)                                       # 30..35 is one bin
 
 
-def test_temperature_has_freezing_break():
+def test_temperature_legend_orders_cold_to_hot():
     s = c.style_for("temp", 0)
-    assert 32 in s.levels                                   # a bin edge sits exactly on 32 F
-    i = int(np.where(s.levels == 32)[0][0]) + 1             # +1: leading 'under' colour
-    below, above = s.colors[i - 1], s.colors[i]
-    assert above[1] > above[2] and below[2] >= below[1]     # greener above 32, bluer below
+    warm = lambda col: col[0] - col[2]                                                      # red minus blue
+    assert warm(s.colors[27]) > 0.5 and warm(s.colors[10]) < 0                              # 90 F orange, 5-10 F blue
 
 
 def test_change_ramp_is_symmetric_with_white_centre():
@@ -41,7 +47,7 @@ def test_levels_are_fixed():
 
 
 def test_change_ramp_matches_wpc_levels():
-    s = c.style_for("temp", 24)
+    s = c.style_for("gust", 24)
     assert list(s.levels) == [-50, -40, -35, -30, -25, -20, -16, -12, -8, -5, -3, -1,
                               1, 3, 5, 8, 12, 16, 20, 25, 30, 35, 40, 50]
     assert len(s.colors) == len(s.levels) + 1          # 23 bins + under + over
@@ -50,10 +56,29 @@ def test_change_ramp_matches_wpc_levels():
     assert s.colors[13][0] > s.colors[13][2] and s.colors[10][2] > s.colors[10][0]
     # whole numbers, and identical for every interval and variable (no per-interval scaling)
     assert all(float(v).is_integer() for v in s.levels)
-    for var in ("temp", "dewpoint", "wind", "gust", "apparent"):
+    for var in ("wind", "gust", "rh", "cloud"):
         for h in (1, 3, 6, 12, 24):
             t = c.style_for(var, h)
             assert np.array_equal(t.levels, s.levels) and np.allclose(t.colors, s.colors)
+
+
+def test_temperature_changes_use_the_ndfd_departure_legend():
+    s = c.style_for("temp", 24)
+    assert list(s.levels) == [-30, -26, -22, -18, -15, -12, -10, -8, -6, -4, -3, -2, -1,
+                              1, 2, 3, 4, 6, 8, 10, 12, 15, 18, 22, 26, 30]
+    assert len(s.colors) == len(s.levels) + 1                  # 25 bins + under + over
+    assert all(float(v).is_integer() for v in s.levels) and s.signed and s.uniform
+    h = hexes(s)
+    assert h[13] == "#ffffff"                                  # -1..+1 white
+    assert h[14] == "#cbe607" and h[12] == "#04dd04"           # +1..2 yellow-green, -2..-1 green
+    assert h[-1] == "#db2ecf" and h[0] == "#dc2ece"            # magenta beyond +/-30
+    warm = lambda col: col[0] - col[2]
+    assert warm(s.colors[19]) > 0.5 and warm(s.colors[7]) < 0   # warming = orange/red, cooling = cyan/blue
+    for var in ("temp", "dewpoint", "wetbulb", "apparent", "dpdep"):                       # every temperature-type change map
+        for h_ in (1, 3, 6, 12, 24):
+            t = c.style_for(var, h_)
+            assert np.array_equal(t.levels, s.levels) and np.allclose(t.colors, s.colors), (var, h_)
+    assert len(c.style_for("gust", 24).colors) != len(s.colors)                              # other changes keep the WPC ramp
 
 
 def hexes(style):
@@ -116,7 +141,7 @@ def test_every_variable_has_a_style_with_consistent_shape():
 
 def test_wet_bulb_shares_the_temperature_legend():
     a, b = c.style_for("temp", 0), c.style_for("wetbulb", 0)
-    assert np.array_equal(a.levels, b.levels) and np.allclose(a.colors, b.colors) and 32 in b.levels
+    assert np.array_equal(a.levels, b.levels) and np.allclose(a.colors, b.colors)
 
 
 def test_pressure_ramps():
@@ -131,7 +156,7 @@ def test_pressure_changes_use_finer_levels_with_the_same_shape():
         s = c.style_for(key, 3)
         assert list(s.levels) == [-30, -24, -20, -16, -12, -9, -6, -4, -3, -2, -1, -0.5,
                                   0.5, 1, 2, 3, 4, 6, 9, 12, 16, 20, 24, 30]
-        assert np.allclose(s.colors, c.style_for("temp", 3).colors)                # same 25 colours, white centre
+        assert np.allclose(s.colors, c.style_for("gust", 3).colors)                # same 25 colours, white centre
         assert np.array_equal(s.levels, c.style_for(key, 24).levels)               # still identical across intervals
 
 
