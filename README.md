@@ -1,11 +1,19 @@
 # New England RTMA / URMA viewer
 
-Hourly maps of **15 surface variables** - temperature, **wet bulb**, dew point, **relative humidity**, **dew point depression**,
-apparent temperature, wind speed / gust / **direction**, **surface pressure**, **mean sea-level pressure (with isobars)**,
-**visibility**, **cloud ceiling**, **cloud cover** and terrain height - from NOAA's **RTMA** and **URMA** (2.5 km), each as the
-current field plus **1 / 3 / 6 / 12 / 24-hour change** where a change is meaningful,
-published as a static dashboard on GitHub Pages. Everything - fetching, decoding, plotting, site
-generation - is Python; the page itself is plain HTML + a little JS.
+Hourly maps of **34 surface variables** from NOAA's **RTMA** and **URMA** (2.5 km), each as the current field plus
+**1 / 3 / 6 / 12 / 24-hour change** where a change is meaningful, published as a static dashboard on GitHub Pages:
+
+* **Basics:** temperature, dew point, apparent temperature, wind speed / gust / **direction**, **surface pressure**,
+  **visibility**, **cloud ceiling**, **cloud cover**, terrain height.
+* **Moisture and pressure:** **wet bulb**, **relative humidity**, **dew point depression**, **RH with respect to ice**,
+  **mixing ratio**, **mean sea-level pressure (with isobars)**, **pressure-gradient strength**.
+* **Winter hazards and cold-air diagnostics:** **sea-level-adjusted temperature**, **flight category**, **frostbite time**, and
+  **past-24-hour** maximum / minimum / range, **hours at or below 32 F**, **freeze-thaw crossings**, **minimum wind chill**
+  and **maximum gust**.
+* **Surface kinematics:** **temperature and dew point advection**, **convergence**, **vorticity**, **frontogenesis** and
+  **terrain-forced (upslope) lift** from the 10 m wind.
+
+Everything - fetching, decoding, plotting, site generation - is Python; the page itself is plain HTML + a little JS.
 
 ```
 rtma_viewer/
@@ -13,7 +21,9 @@ rtma_viewer/
   grib.py        eccodes decode straight from memory, New England window of the CONUS grid
   fields.py      fetch -> decode -> window -> compact cache (float16 / packed uint16 / static float32; each hour only the newest cycle is downloaded)
   colors.py      fixed-level colour ramps (NWS wind / wind chill / heat index legends; WPC-style ramp for changes)
-  derived.py     wind chill, heat index, apparent temperature, wet bulb, MSLP, RH, dew point depression, calm-masked wind direction
+  derived.py     wind chill, heat index, apparent temperature, wet bulb, MSLP, RH (liquid / ice), mixing ratio, sea-level temperature,
+                 flight category, frostbite zones, 24-hour max / min / hours-below-freezing / crossings, calm-masked wind direction
+  kinematics.py  grid geometry + advection, convergence, vorticity, frontogenesis, terrain lift, pressure gradient
   stations.py    New England METAR stations (data/stations.csv) + label de-cluttering
   boundaries.py  Natural Earth 1:10m states/counties/coast/lakes, clipped + pre-projected once
   render.py      cartopy/matplotlib map panels -> palette-quantised, oxipng-recompressed PNGs
@@ -34,25 +44,28 @@ site/index.html  dashboard (product / variable / time-step controls, compare gri
 
 Nothing generated. The workflow builds into `public/` and deploys it with the Pages artifact
 actions, so **no PNGs, GRIBs or data files are ever committed** - the repo stays source-only and
-does not grow. The only persisted state is a small Actions cache (`.cache/fields`, float16 arrays
-of the last ~28 h, ~25 MB) and the Natural Earth shapefiles; the workflow keeps the newest two
+does not grow. The only persisted state is a small Actions cache (`.cache/fields`, compact float16 / packed arrays
+of the last ~28 h, ~65 MB per product, ~130 MB in all) and the Natural Earth shapefiles; the workflow keeps the newest two
 field caches and deletes the rest.
 
 ## Data used
 
 * Only the needed GRIB messages are requested: the `.idx` gives each message's start byte, and
   `get_object(Range="bytes=start-end")` downloads just that message instead of the whole file. The messages used are
-  `TMP` `DPT` `WIND` `GUST` `WDIR` (2 m / 10 m), `PRES` and `HGT` (surface), `VIS`, `CEIL` and `TCDC`; the file's
-  `UGRD` / `VGRD` / `SPFH` are not needed (WIND falls back to hypot(UGRD, VGRD) if absent).
-* Variables are only loaded for the hours their maps need (`hours_needed()` in `config.py`): the change-map variables
-  (temperature, dew point, wind, gust, pressure) for 6 cycles on a cold start, but wind direction, visibility, ceiling and
-  cloud cover only for the newest cycle, and terrain (static) once per product.
-* A normal run therefore downloads the newest cycle only: about **58 MB per product** (~116 MB per hourly run, up from
-  ~48 MB); earlier hours come from the cache. A cold start (or cache eviction) is ~220 MB per product. The build log prints real
-  bytes and request counts for each product.
+  `TMP` `DPT` `WIND` `GUST` `WDIR` `UGRD` `VGRD` (2 m / 10 m), `PRES` and `HGT` (surface), `VIS`, `CEIL` and `TCDC`; the file's
+  `SPFH` is not needed (WIND falls back to hypot(UGRD, VGRD) if absent). `UGRD` / `VGRD` feed only the kinematic maps.
+* Variables are only loaded for the hours their maps need (`hours_needed()` in `config.py`, which walks the derivation graph):
+  dew point and pressure for 6 cycles (the change maps), **temperature, wind and gust for all 25 hourly cycles** of the past day
+  (the 24-hour summaries), and wind direction, visibility, ceiling, cloud cover and the wind components only for the newest cycle;
+  terrain (static) once per product.
+* A normal run downloads the newest cycle only: about **70 MB per product** (~140 MB per hourly run, up from ~116 MB), because
+  every earlier hour was once the newest and is already in the cache. A cold start (or cache eviction) fetches 25 cycles of
+  temperature, wind and gust: **~560 MB per product** (measured; about a minute per product on a fast link). The build log prints
+  real bytes and request counts for each product. If a few hourly analyses are missing the 24-hour summaries still draw (at least
+  19 of 25 are needed; hours below freezing is rescaled to the full period).
 * Cache precision: temperature-like fields are float16 (<= 0.06 units), but float16 would quantise ~1000 mb pressure to 0.5-1 mb,
-  so pressure is cached as packed uint16 at 0.01 mb (same 2 bytes per cell). Variables that only need the newest cycle are
-  pruned to one file, so the Actions cache grows by about a quarter, not threefold.
+  so pressure is cached as packed uint16 at 0.01 mb (same 2 bytes per cell), and the wind components (which are differentiated) at
+  0.002 m/s. Variables that only need the newest cycle are pruned to one file. The field cache is about 65 MB per product.
 * RTMA is published ~35-45 min after the hour; URMA a few hours later. The build looks back up to
   6 h (RTMA) / 12 h (URMA) for the newest published cycle, so the page always shows the latest
   available analysis and states its valid time and lag.
@@ -111,13 +124,28 @@ as KMWN reads the analysis at the grid's terrain height, not at 1917 m.)
 | **Wet bulb** | derived: T, Td, surface pressure | yes | thermodynamic wet bulb (liquid water); same legend as temperature, so the 32 F break lines up |
 | **Relative humidity** | derived: T, Td | yes | with respect to liquid water, 0-100 % |
 | **Dew point depression** | derived: T - Td | yes | near 0 = saturated (fog, low cloud, rime) |
+| **Sea-level temperature** | derived: T, terrain | no | T + 3.57 F per 1,000 ft (6.5 K/km); temperature legend; removes elevation so cold pools / air-mass edges show |
+| **RH w.r.t. ice** | derived: T, Td | no | over ice below 0 C, water above; **not clipped at 100** (saturated-over-water air reads ~110 % at 15 F); violet above 100 % |
+| **Mixing ratio** | derived: Td, surface pressure | no | g/kg; follows the air mass's moisture independent of temperature |
+| **24 h max / min temperature, range** | derived: 25 hourly T | no | the 24 hours ending at the valid time (hourly snapshots, not calendar days) |
+| **Hours <= 32 F** | derived: 25 hourly T | no | linear interpolation between hourly analyses |
+| **Freeze-thaw crossings** | derived: 25 hourly T | no | times T crossed 32 F in either direction (2+ is a freeze-thaw cycle) |
+| **24 h min wind chill** | derived: 25 hourly T, wind | no | NWS "24-Hour Minimum Wind Chill" legend; air temperature where wind chill is undefined |
+| **24 h max gust** | derived: 25 hourly `GUST` | no | NWS wind legend |
 | Wind speed, gust | `WIND`, `GUST` 10 m | yes | NWS wind legend |
 | **Wind direction** | `WDIR` masked where wind < 2 mph | no | 16-point compass legend; calm air (RTMA encodes it as 0) is left white; average is a vector mean |
+| **Frostbite time** | derived: T, wind | no | none / 30 / 10 / 5 min from the NWS wind chill chart (round mid-chart values, see below); area shares instead of low / high |
 | **Surface pressure** | `PRES` | yes | station pressure at the analysis terrain height (mostly a map of elevation); change maps use finer levels (0.5 mb centre, 30 mb ends) |
 | **MSLP** | derived: PRES, HGT, T, Td | yes | isobars every 2 mb (labelled every 4) from a lightly smoothed field; summit stations above 1,000 m are not labelled |
+| **Pressure gradient** | derived: MSLP, terrain | no | mb per 100 km of MSLP smoothed over ~60 km; blank above 1,000 m; ~17 mph geostrophic wind per mb / 100 km |
 | **Visibility** | `VIS` | no | statute miles; the analysis tops out near 10 mi |
 | **Cloud ceiling** | `CEIL` | no | feet AGL, aviation breaks (500 / 1,000 / 3,000 ft); 12,000 ft and up (or none) is `CLR` |
+| **Flight category** | derived: visibility, ceiling | no | LIFR / IFR / MVFR / VFR (the worse of the two), shown as area shares |
 | **Cloud cover** | `TCDC` | no | total sky cover, % |
+| **Temperature / dew point advection** | derived: sea-level T / Td, `UGRD` `VGRD` | no | F per hour, warm / moist positive; see "Surface kinematics" |
+| **Convergence, vorticity** | derived: `UGRD` `VGRD` | no | 1e-5 s-1; convergence positive = air piling up, vorticity positive = cyclonic |
+| **Frontogenesis** | derived: sea-level T, `UGRD` `VGRD` | no | Petterssen 2-D kinematic, F per 100 km per 3 h |
+| **Upslope lift** | derived: `UGRD` `VGRD`, terrain | no | V . grad(z), cm/s; positive = blowing uphill |
 | **Terrain height** | `HGT` (static) | no | the analysis grid's smoothed terrain, in feet |
 
 Current-only variables (no change maps) have 1 / 3 / 6 / 12 / 24-hour buttons greyed out; switching to one from a change map falls back
@@ -140,6 +168,54 @@ It uses the real surface pressure, so high ground reads correctly. Against MetPy
 (T -25..30 C, RH 20-100 %, 820-1040 mb): 0.08 C rms overall, **0.02 C rms and 0.06 C worst below 2 C**. Rule of thumb for
 precipitation type: precipitation falling into a surface wet bulb at or below 32 F tends to stay frozen, well above 34-35 F favours rain,
 and in between is marginal or mixed (the map is not a precipitation forecast).
+
+### Past-24-hour products and winter hazards (derived)
+
+These need no extra download: they are computed from the hourly analyses the cache already holds (every hour was once the newest).
+`hours_at_or_below` interpolates linearly between hourly analyses (a ramp from 20 F to 44 F spends exactly 12 h at or below 32 F;
+tested), and `threshold_crossings` counts sign changes of `T - 32`. Maxima and minima are over hourly snapshots, so a brief extreme
+between two analyses is missed, and the window ends at the valid time rather than at a calendar day.
+
+**Flight category** follows the FAA / NWS definitions on the analysed visibility and ceiling (VFR: ceiling > 3,000 ft *and* visibility
+> 5 mi; MVFR 1,000-3,000 ft and/or 3-5 mi; IFR 500-999 ft and/or 1 to < 3 mi; LIFR < 500 ft and/or < 1 mi). The analysed visibility
+and ceiling are coarse, so it is guidance, not a METAR.
+
+**Frostbite time** uses the NWS wind chill formula and approximate zone edges from the NWS chart: about 30 minutes at a wind chill of
+-18 F or colder, 10 minutes at -33 F, 5 minutes at -48 F. The chart's shading is not a single wind-chill contour (its edges move a few
+degrees with wind speed), so treat these as round mid-chart values. In light wind (3 mph or less, where wind chill is undefined) the
+air temperature itself is compared.
+
+**Sea-level temperature** is `T + 6.5 K/km * z` (3.57 F per 1,000 ft); it is the thermal field the advection and frontogenesis maps
+use, because otherwise wind blowing along a slope would register as warm or cold advection.
+
+**RH with respect to ice** uses Alduchov-Eskridge saturation pressures over ice below 0 C (1.032 hPa at -20 C and 0.128 hPa at -40 C,
+matching standard tables) and over liquid water above. The published dew point is with respect to liquid water, so saturated air
+reads above 100 % below freezing (121 % at -20 C): that is supersaturation over ice, not an error.
+
+### Surface kinematics (derived)
+
+Advection, convergence, vorticity, frontogenesis and terrain lift are computed in `rtma_viewer/kinematics.py` from the 10 m wind
+components. Things worth knowing:
+
+* **The components are grid-relative, not east / north.** RTMA / URMA set GRIB2 `uvRelativeToGrid = 1`; on this Lambert-conformal grid
+  the grid's x axis is rotated -n (lon - lon0) from east (n = sin 25 deg), ~10.6 deg over New England. The diagnostics therefore
+  difference the components directly along the grid axes, using the true ground distance between cells (from latitude / longitude,
+  so the map-scale factor is included). `tests/test_kinematics.py` pins the convention against 60 real RTMA cells (direction from
+  `UGRD` / `VGRD` vs the published `WDIR` differ by exactly the convergence angle, within 0.1 deg), so a future change in NOAA's
+  convention fails the tests instead of silently rotating every map.
+* **Smoothing first.** Derivatives of a 2.5 km wind analysis are mostly noise, so the wind and the scalar are smoothed with a
+  Gaussian (sigma 3 cells, ~7.6 km; 4 for frontogenesis) before centred differencing. Features narrower than ~20 km are
+  not resolved, and coastlines / lake shores light up because land and water really differ.
+* Formulas: advection `-V . grad(s)`; convergence `-(du/dx + dv/dy)`; vorticity `dv/dx - du/dy`; Petterssen frontogenesis
+  `-(1/|grad T|) [Tx^2 ux + Ty^2 vy + Tx Ty (vx + uy)]`; terrain lift `V . grad(z)`. Divergence, vorticity, advection and
+  frontogenesis are checked against **MetPy** on random smooth fields (agreement to 0.1-2 %), and against analytic cases (solid-body
+  rotation, uniform expansion, linear gradients, sloping planes).
+* These are 10 m, surface-only, horizontal-kinematic diagnostics: no vertical motion, no diabatic heating, nothing above the surface
+  layer. Use them to see *where* boundaries and lift are, not for exact values. Frontogenesis and terrain lift are the most
+  qualitative; terrain lift ignores stability, so blocked low-level flow does not actually climb the terrain.
+* **Pressure gradient.** The 2.5 km MSLP carries terrain-scale noise (10 m of terrain error is ~1 mb), so its raw gradient is mostly
+  noise: on a live day with a broad ~0.7 mb / 100 km gradient, sigma = 5 cells read 1.6, 12 read 1.1 and 25 (used, ~60 km) ~0.85.
+  Narrow features such as a coastal front are therefore smoothed away; the map is for the broad gradient (wind potential).
 
 ## Apparent temperature (derived product)
 
@@ -166,7 +242,7 @@ pip install -r requirements.txt
 python -m rtma_viewer.build --demo          # offline, synthetic data (fake S3 serving real GRIB2)
 python -m rtma_viewer.build                 # live NOAA data
 python -m http.server -d public 8000        # http://localhost:8000
-pytest                                      # idx parsing, ramps, derived-field physics (incl. real METAR / MetPy reference cases), byte-range fetch + decode + cache
+pytest                                      # idx parsing, ramps, derived-field physics (real METAR / real-wind and MetPy reference cases), kinematics, byte-range fetch + decode + cache
 ```
 
 ## Tuning
@@ -175,6 +251,6 @@ pytest                                      # idx parsing, ramps, derived-field 
 |---|---|
 | Different region / frame | `MAP_CENTER`, `HALF_H_M` in `render.py` and `DISPLAY_BBOX` in `config.py` (checked at import) |
 | Stations / label density | `scripts/make_stations.py`, `MIN_SEP_M` in `render.py` |
-| Another variable | add a `Variable` in `config.py` (+ a style in `colors.py`). Useful flags: `derive` / `requires` (computed from other variables), `changes=False` (current field only), `static=True` (terrain-like), `hidden=True` (input only, no map), `pack=(offset, scale)` (cache precision), `group`, `note` |
+| Another variable | add a `Variable` in `config.py` (+ a style in `colors.py`). Useful flags: `derive` / `requires` (computed from other variables), `changes=False` (current field only), `series=N` (summarise the last N hours: `derive` gets stacks), `needs_geom=True` (kinematics: `derive(..., geom=)`), `static=True` (terrain-like), `hidden=True` (input only, no map), `pack=(offset, scale)` (cache precision), `diverging=True` (signed current field), `categories=(...)` (integer classes), `group`, `note` |
 | Time steps | `INTERVALS` in `config.py` |
 | Schedule | cron in `update.yml` |
