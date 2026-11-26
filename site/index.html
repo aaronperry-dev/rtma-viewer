@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>New England RTMA / URMA viewer</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%277%27 fill=%27%231f6feb%27/%3E%3Cpath d=%27M7 21l5-6 4 3 6-9 3 5%27 fill=%27none%27 stroke=%27white%27 stroke-width=%272.6%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27/%3E%3C/svg%3E">
-<meta name="description" content="Hourly RTMA and URMA surface analyses for New England: temperature, wet bulb, dew point, humidity, wind, pressure and MSLP, visibility, ceiling and cloud cover, with 1/3/6/12/24-hour changes.">
+<meta name="description" content="Hourly RTMA and URMA surface analyses for New England: temperature, wet bulb, humidity, wind, MSLP, visibility and flight category, 24-hour highs, lows and freeze-thaw, wind chill and frostbite, and surface advection, convergence and frontogenesis, with 1/3/6/12/24-hour changes.">
 <style>
   :root {
     color-scheme: light dark;
@@ -45,6 +45,8 @@
   button:focus-visible, tr[tabindex]:focus-visible, .thumb:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
   .vgroups { display: flex; flex-wrap: wrap; gap: 8px 14px; }
+  #sel-var { display: none; font: inherit; font-size: 15px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line);
+             background: var(--soft); color: var(--ink); max-width: 100%; }
   .vgroup > small { display: block; font-size: 11px; color: var(--muted); margin: 0 0 2px 3px; }
   .vnote { color: var(--ink); font-size: 13px; margin: 14px 0 0; padding: 10px 12px; background: var(--soft); border-radius: 8px; }
   .vnote strong { display: block; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin-bottom: 2px; }
@@ -57,8 +59,8 @@
   .empty { padding: 60px 20px; text-align: center; color: var(--muted); }
 
   h2 { font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
-  .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 18px; }
-  .tile { background: var(--soft); border-radius: 8px; padding: 8px 10px; }
+  .tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 18px; }
+  .tile { background: var(--soft); border-radius: 8px; padding: 8px 10px; min-width: 0; }
   .tile .k { font-size: 12px; color: var(--muted); }
   .tile .v { font-size: 21px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
   .tile .u { font-size: 13px; color: var(--muted); font-weight: 500; margin-left: 2px; }
@@ -84,6 +86,8 @@
   [hidden] { display: none !important; }
 
   @media (max-width: 900px) {
+    #seg-var { display: none; }               /* 34 variables: a grouped drop-down instead of seven rows of buttons */
+    #sel-var { display: block; }
     main { grid-template-columns: minmax(0, 1fr); }
     #compare { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .status { text-align: left; }
@@ -103,7 +107,8 @@
 
   <section class="controls" aria-label="Controls">
     <div class="group"><span>Product</span><div class="seg" id="seg-product" role="group" aria-label="Product"></div></div>
-    <div class="group"><span>Variable</span><div class="vgroups" id="seg-var" role="group" aria-label="Variable"></div></div>
+    <div class="group"><span>Variable</span><div class="vgroups" id="seg-var" role="group" aria-label="Variable"></div>
+      <select id="sel-var" aria-label="Variable"></select></div>
     <div class="group"><span>Current field · or change over the last</span><div class="seg" id="seg-int" role="group" aria-label="Time step"></div></div>
     <div class="group"><span>View</span><div class="seg" id="seg-view" role="group" aria-label="View"></div></div>
   </section>
@@ -113,11 +118,13 @@
     <aside class="card" aria-label="Summary">
       <h2 id="sum-title">New England land area</h2>
       <div class="tiles" id="tiles"></div>
-      <h2>All time steps</h2>
-      <table>
-        <thead><tr><th>Field</th><th id="th-lo">Low</th><th>Mean</th><th id="th-hi">High</th></tr></thead>
-        <tbody id="rows"></tbody>
-      </table>
+      <div id="steps">
+        <h2>All time steps</h2>
+        <table>
+          <thead><tr><th>Field</th><th id="th-lo">Low</th><th>Mean</th><th id="th-hi">High</th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
       <p class="vnote" id="vnote" hidden></p>
       <p class="note" id="blurb"></p>
     </aside>
@@ -143,7 +150,7 @@ const fmtDate = (iso, tz) => new Intl.DateTimeFormat("en-US", { timeZone: tz, we
                                 hour: "numeric", minute: "2-digit", timeZoneName: "short" }).format(new Date(iso));
 const intLabel = h => h === 0 ? "Current" : `${h} h`;
 const num = (v, signed) => v == null ? "—" : (signed && v > 0 ? "+" : "") + v.toFixed(digits()).replace("-", "−");
-const digits = () => ["ceiling", "terrain", "wdir"].includes(state.variable) ? 0 : 1;
+const digits = () => varMeta(state.variable).digits ?? 1;
 const varMeta = k => data.variables.find(v => v.key === k);
 const prod = () => data.products[state.product];
 const panel = (p = state.product, v = state.variable, h = state.interval) => data.products[p]?.panels?.[v]?.[String(h)];
@@ -168,6 +175,18 @@ function segGroups(el, vars, current, onPick) {
     wrap.append(label, inner);
     return wrap;
   }));
+}
+
+function varSelect(el, vars, current, onPick) {
+  const names = [...new Set(vars.map(v => v.group || "Variables"))];
+  el.replaceChildren(...names.map(g => {
+    const og = document.createElement("optgroup"); og.label = g;
+    for (const v of vars.filter(v => (v.group || "Variables") === g)) {
+      const o = document.createElement("option"); o.value = v.key; o.textContent = v.label; o.selected = v.key === current; og.append(o);
+    }
+    return og;
+  }));
+  el.onchange = () => onPick(el.value);
 }
 
 function readHash() {
@@ -204,6 +223,7 @@ function render() {
   seg($("#seg-product"), Object.entries(data.products).map(([k, p]) => ({ value: k, label: p.label, disabled: p.status !== "ok" })),
       state.product, v => set({ product: v }));
   segGroups($("#seg-var"), data.variables, state.variable, v => set({ variable: v }));
+  varSelect($("#sel-var"), data.variables, state.variable, v => set({ variable: v }));
   seg($("#seg-int"), data.intervals.map(h => ({ value: h, label: intLabel(h), disabled: !panel(state.product, state.variable, h) })),
       state.interval, v => set({ interval: v }));
   seg($("#seg-view"), [{ value: "map", label: "Map" }, { value: "compare", label: "Compare all" }], state.view, v => set({ view: v }));
@@ -229,17 +249,23 @@ function renderSingle(unit, change) {
 
   // summary tiles
   const lo = change ? "Largest drop" : "Low", hi = change ? "Largest rise" : "High";
-  $("#sum-title").textContent = `New England land area · ${intLabel(state.interval)}${change ? " change" : ""}`;
+  $("#sum-title").textContent = `New England land area · ${intLabel(state.interval)}${change ? " change" : ""}${unit.length > 5 && !(varMeta(state.variable).categories || []).length ? " · " + unit : ""}`;
   $("#th-lo").textContent = change ? "Min" : "Low"; $("#th-hi").textContent = change ? "Max" : "High";
-  const tile = (k, v) => `<div class="tile"><div class="k">${k}</div><div class="v">${num(v, change)}<span class="u">${unit}</span></div></div>`;
-  const vm = varMeta(state.variable);
-  $("#tiles").innerHTML = !p ? "" : vm.circular ? tile("Mean direction", p.mean) : tile(lo, p.min) + tile("Average", p.mean) + tile(hi, p.max);
+  const vm = varMeta(state.variable), signed = change || vm.diverging, cats = vm.categories || [];
+  const longUnit = unit.length > 5;                           // e.g. "°F/100 km/3 h": too wide for a tile, goes in the heading
+  const tile = (k, v) => `<div class="tile"><div class="k">${k}</div><div class="v">${num(v, signed)}${longUnit ? "" : `<span class="u">${unit}</span>`}</div></div>`;
+  const share = (k, v) => `<div class="tile"><div class="k">${k}</div><div class="v">${v == null ? "—" : v.toFixed(1)}<span class="u">%</span></div></div>`;
+  $("#tiles").innerHTML = !p ? "" : cats.length ? cats.map((c, i) => share(c, p.shares?.[i])).join("")
+    : vm.circular ? tile("Mean direction", p.mean) : tile(lo, p.min) + tile("Average", p.mean) + tile(hi, p.max);
+  $("#steps").hidden = cats.length > 0;                     // class fields have no low / mean / high table
+  $("#sum-title").textContent = cats.length ? `Share of New England land area · ${vm.label}` : $("#sum-title").textContent;
 
   // table view
   $("#rows").replaceChildren(...data.intervals.map(h => {
     const q = panel(state.product, state.variable, h), tr = document.createElement("tr");
     tr.tabIndex = 0; tr.setAttribute("aria-selected", String(h === state.interval));
-    tr.innerHTML = `<td>${h === 0 ? "Current" : h + " h change"}</td><td>${num(q?.min, h > 0)}</td><td>${num(q?.mean, h > 0)}</td><td>${num(q?.max, h > 0)}</td>`;
+    const sg = h > 0 || vm.diverging;
+    tr.innerHTML = `<td>${h === 0 ? "Current" : h + " h change"}</td><td>${num(q?.min, sg)}</td><td>${num(q?.mean, sg)}</td><td>${num(q?.max, sg)}</td>`;
     if (q) {
       const pick = () => set({ interval: h });
       tr.addEventListener("click", pick);
@@ -271,10 +297,11 @@ function renderCompare() {
 
 let preloaded = new Set();
 function preload() {
-  // warm the cache for every step of the chosen variable, then the rest when idle
+  // warm the cache for every step of the chosen variable and the current maps of its neighbours in the picker, when idle
   const queue = [];
   for (const h of data.intervals) { const p = panel(state.product, state.variable, h); if (p) queue.push(src(p)); }
-  const rest = () => { for (const v of Object.keys(prod().panels || {})) { const p = panel(state.product, v, 0); if (p) queue.push(src(p)); } };
+  const grp = varMeta(state.variable).group;
+  const rest = () => { for (const m of data.variables) if (m.group === grp) { const p = panel(state.product, m.key, 0); if (p) queue.push(src(p)); } };
   (window.requestIdleCallback || setTimeout)(() => { rest(); queue.forEach(u => { if (!preloaded.has(u)) { preloaded.add(u); new Image().src = u; } }); });
 }
 
