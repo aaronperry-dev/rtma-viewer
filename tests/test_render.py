@@ -80,9 +80,14 @@ def test_period_products_say_so_in_the_header():
     from datetime import datetime, timezone
     from rtma_viewer.config import PRODUCTS
     t = datetime(2026, 11, 26, 2, tzinfo=timezone.utc)
-    left, rest, rb, rr = render.panel_text(PRODUCTS["rtma"], VARIABLES["tmin24"], 0, t, None)
-    assert "24-Hour Minimum" in rest and rest.endswith("(°F)") and "(past 24 h)" in rr
-    assert render.panel_text(PRODUCTS["rtma"], VARIABLES["fltcat"], 0, t, None)[1] == ": Flight Category (Visibility and Ceiling)"
+    h = render.panel_text(PRODUCTS["rtma"], VARIABLES["tmin24"], 0, t, None)
+    assert "24-Hour Minimum" in h.title and h.title.endswith("(°F)") and h.note == ""      # the title already names the window
+    import dataclasses
+    plain = dataclasses.replace(VARIABLES["tmin24"], long_name="Minimum 2m Temperature")
+    assert "(past 24 h)" in render.panel_text(PRODUCTS["rtma"], plain, 0, t, None).note
+    assert h.product == "NOAA Real-Time Mesoscale Analysis 2.5km (RTMA)"
+    assert render.panel_text(PRODUCTS["urma"], VARIABLES["temp"], 0, t, None).product == "NOAA Unrestricted Mesoscale Analysis 2.5km (URMA)"
+    assert render.panel_text(PRODUCTS["rtma"], VARIABLES["fltcat"], 0, t, None).title == "Flight Category (Visibility and Ceiling)"
 
 
 # --------------------------------------------------------------------------- reference lines (32 F red, 0 F blue)
@@ -107,7 +112,7 @@ def _render_gradient(tmp_path, key, lo, hi, interval=0, name="m.png", lines=True
     var = VARIABLES[key] if lines else dataclasses.replace(VARIABLES[key], lines=())
     style, signed = render.style_and_flags(var, interval)
     out = tmp_path / name
-    render.render_panel(ctx, field, style, texts=("t", "", "v", ""), signed=signed, out=out, dpi=60, var=var)
+    render.render_panel(ctx, field, style, texts=render.Header("p", ": v", "t", ""), signed=signed, out=out, dpi=60, var=var)
     return np.asarray(Image.open(out).convert("RGB")).astype(int)
 
 
