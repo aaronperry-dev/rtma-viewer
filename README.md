@@ -24,7 +24,7 @@ rtma_viewer/
   s3.py          anonymous S3 access, .idx parsing, one HTTP byte-range request per GRIB message
   grib.py        eccodes decode straight from memory, New England window of the CONUS grid
   fields.py      fetch -> decode -> window -> compact cache (float16 / packed uint16 / static float32; each hour only the newest cycle is downloaded)
-  colors.py      fixed-level colour ramps (WPC max/min temperature legend; NWS wind / wind chill / heat index and NDFD departure legends; WPC-style ramp for other changes)
+  colors.py      fixed-level color ramps (WPC max/min temperature legend; NWS wind / wind chill / heat index and NDFD departure legends; WPC-style ramp for other changes)
   derived.py     wind chill, heat index, apparent temperature, wet bulb, MSLP, RH (liquid / ice), mixing ratio, sea-level temperature,
                  flight category, frostbite zones, 24-hour max / min / hours-below-freezing / crossings, calm-masked wind direction
   kinematics.py  grid geometry + advection, convergence, vorticity, frontogenesis, terrain lift, pressure gradient
@@ -88,17 +88,25 @@ field caches and deletes the rest.
 
 ## PNG size
 
-Maps are drawn at 1200x876, then converted to an indexed palette made of the **exact** colour-bin
-colours plus a median-cut palette for text/line anti-aliasing (no dithering), then recompressed
+Maps are drawn at 1200x903, then converted to an indexed palette made of the **exact** color-bin
+colors plus a median-cut palette for text/line anti-aliasing (no dithering), then recompressed
 losslessly with `oxipng` when available. Expect roughly 120-180 KB per map.
 (`--colors` and `--dpi` trade size for fidelity.)
 
 ## Map style
 
-Landscape page with a thin-framed map: header line `RTMA: 2m Temperature (°F)` (left) and
-`Valid: 17:00z Thu Nov 5 2026` (right), a wide segmented colour bar bottom-left, thick state lines over
-thin county lines (Natural Earth 1:10m), and the footer credit `aaronperry-dev.github.io (Aaron Perry)`
-(`BRANDING` in `render.py`).
+Every map uses the same layout, set by constants at the top of `render.py`: a two-line header, a thin-framed map, a segmented
+color bar bottom-left, thick state lines over thin county lines (Natural Earth 1:10m), and the footer credit
+`aaronperry-dev.github.io (Aaron Perry)` (`BRANDING`).
+
+* **Header line 1:** the full analysis name in bold on the left (`NOAA Real-Time Mesoscale Analysis 2.5km (RTMA)`, or
+  `NOAA Unrestricted Mesoscale Analysis 2.5km (URMA)`; `Product.map_title` in `config.py`), and `Valid: 17:00z Thu Nov 5 2026` on
+  the right.
+* **Header line 2:** the variable and its unit in bold on the left, e.g. `2m Temperature (°F)`, and anything that qualifies the map
+  on the right: `(vs 16:00z Thu Nov 5)` for change maps, `(past 24 h)` for period products whose title does not already say so, or
+  `(N of M h available)` for totals built from fewer hours than their name says.
+* Both header lines use one font size, and every color-bar uses one tick-label size (`HEADER_SIZE`, `TICK_SIZE`).
+* Maps are 1200 x 903 px.
 
 **Values are labelled at METAR stations**, not on a grid: the analysis cell nearest each airport is
 sampled and printed in bold with a white halo (values only; set `SHOW_STATION_IDS = True` in `render.py`
@@ -110,23 +118,23 @@ sites. When the map is crowded, higher-priority sites win and neighbours closer 
 Station values are also written to `data.json`. (RTMA's grid terrain is smoothed, so a summit site such
 as KMWN reads the analysis at the grid's terrain height, not at 1917 m.)
 
-## Colour ramps
+## Color ramps
 
-* Fixed physical levels (same colours for the same value in every frame/product).
+* Fixed physical levels (same colors for the same value in every frame/product).
 * **Temperature, dew point, wet bulb, sea-level temperature, 24 h max / min temperature**: one shared legend, the WPC max / min
   temperature forecast ramp (sampled from the WPC Day 3 max / Day 4 min maps): 5 F bins from -40 to 100 F plus an under and an
-  over colour (pink below -40, white -35..-30, light blue 25-30, teal 30-35, green 45-65, pale yellow 70-75, orange 85-95, red above 100).
-  The bins are 5 F wide, so 32 F is not a colour break (30-35 F is one teal).
+  over color (pink below -40, white -35..-30, light blue 25-30, teal 30-35, green 45-65, pale yellow 70-75, orange 85-95, red above 100).
+  The bins are 5 F wide, so 32 F is not a color break (30-35 F is one teal).
 * **Wind speed and wind gust**: the NWS "Maximum Wind Gust" legend (sampled from an NWS Gray/Portland map) -
   17 whole-number bins (0-5, 5-10 ... 50-60, 60-70, 70-80, 80-100, 100-120, 120-140, 140-150 mph) with an equal-width legend.
 * **Apparent temperature**: the NWS "24-Hour Minimum Wind Chill Index Temperature" legend (< -60 ... 35+, 5 F bins)
   joined to the NWS "24-Hour Maximum Heat Index Temperature" legend (75 ... 120+, 5 F bins).  Neither legend covers
-  35-75 F (wind chill is one flat colour from 35 F up; heat index is a single grey below 75 F), so that span is a
+  35-75 F (wind chill is one flat color from 35 F up; heat index is a single gray below 75 F), so that span is a
   smooth OKLab bridge from the wind-chill teal to the first heat-index yellow.
 * **New variables**: wet bulb uses the temperature ramp; relative humidity, dew point depression, cloud cover, surface pressure and terrain
   have sequential ramps; MSLP is diverging about ~1013 mb (2 mb bins); wind direction is a cyclic 16-point compass; visibility and
   ceiling use aviation-style category breaks (every bin edge is a flight-category boundary). A value exactly on the top level (RH or cloud
-  cover of 100 %, direction 360) takes the top colour rather than becoming transparent.
+  cover of 100 %, direction 360) takes the top color rather than becoming transparent.
 * **Temperature-type changes** (temperature, dew point, wet bulb, apparent temperature, dew point depression; all intervals): the NWS
   NDFD "departure from climatology" legend - white for -1..+1, yellow -> orange -> red -> pink -> magenta for warming, green -> cyan ->
   blue -> violet for cooling, whole-number levels (1, 2, 3, 4, 6, 8, 10, 12, 15, 18, 22, 26, 30) and an equal-width legend;
@@ -134,11 +142,11 @@ as KMWN reads the analysis at the grid's terrain height, not at 1917 m.)
 * Every other change map (wind, gust, pressure, humidity ...): the WPC-style change ramp - white for -1..+1, blues for cooling,
   peach -> orange -> red -> maroon -> magenta for warming - with the original whole-number levels (1, 3, 5, 8, 12,
   16, 20, 25, 30, 35, 40, 50) and an equal-width legend. The levels are the same for 1/3/6/12/24 h. Pressure and MSLP use the same
-  25 colours on finer levels (+-0.5, 1, 2, 3, 4, 6, 9, 12, 16, 20, 24, 30 mb) because pressure changes are an order of magnitude smaller.
+  25 colors on finer levels (+-0.5, 1, 2, 3, 4, 6, 9, 12, 16, 20, 24, 30 mb) because pressure changes are an order of magnitude smaller.
 * **Reference lines**: every absolute temperature-type map (temperature, dew point, wet bulb, apparent temperature, sea-level
   temperature, 24 h max / min temperature, 24 h min wind chill) carries a **red 32 F line** and a **blue 0 F line** (white halo so
-  they show over the dark ramp colours). They are contours of the field smoothed by one cell, drawn only where the field really
-  crosses the value, and never on change maps. The colours / values are `TEMP_LINES` in `rtma_viewer/config.py`; the page lists
+  they show over the dark ramp colors). They are contours of the field smoothed by one cell, drawn only where the field really
+  crosses the value, and never on change maps. The colors / values are `TEMP_LINES` in `rtma_viewer/config.py`; the page lists
   the lines under the map description.
 * Edit `rtma_viewer/colors.py` to change anchors, ranges or bin widths.
 
@@ -148,7 +156,7 @@ as KMWN reads the analysis at the grid's terrain height, not at 1917 m.)
 |---|---|---|---|
 | Temperature, dew point | `TMP`, `DPT` 2 m | yes | |
 | Apparent temperature | derived: T, Td, wind | yes | see below |
-| **Wet bulb** | derived: T, Td, surface pressure | yes | thermodynamic wet bulb (liquid water); same legend as temperature (5 F bins, so 30-35 F is a single colour) |
+| **Wet bulb** | derived: T, Td, surface pressure | yes | thermodynamic wet bulb (liquid water); same legend as temperature (5 F bins, so 30-35 F is a single color) |
 | **Relative humidity** | derived: T, Td | yes | with respect to liquid water, 0-100 % |
 | **Dew point depression** | derived: T - Td | yes | near 0 = saturated (fog, low cloud, rime) |
 | **Sea-level temperature** | derived: T, terrain | no | T + 3.57 F per 1,000 ft (6.5 K/km); temperature legend; removes elevation so cold pools / air-mass edges show |
@@ -185,14 +193,14 @@ as KMWN reads the analysis at the grid's terrain height, not at 1917 m.)
 | **Freezing degree-hours (48 h)** | derived: 49 hourly T | no | sum of F below 32: river / lake ice growth and frost depth |
 | **Blizzard criteria** | derived: 6 hourly visibility, wind, gust | no | longest run of hourly analyses with visibility <= 1/4 mi and wind or gust >= 35 mph; 3 or more meets the NWS 3-hour definition |
 | **Flash freeze** | derived: 4 hourly T, hourly precipitation | no | none / fell below 32 F with liquid precipitation in 3 h / and fell >= 10 F |
-| **Freezing fog / drizzle favourable** | derived: T, Td, visibility, ceiling | no | T <= 32 F, T - Td <= 2 F, and visibility < 3 mi or ceiling < 1,000 ft; dense if visibility < 1/2 mi; snow also lights it up, so read it with radar |
+| **Freezing fog / drizzle favorable** | derived: T, Td, visibility, ceiling | no | T <= 32 F, T - Td <= 2 F, and visibility < 3 mi or ceiling < 1,000 ft; dense if visibility < 1/2 mi; snow also lights it up, so read it with radar |
 | **Wet-snow load risk** | derived: 7 hourly precipitation, T, Td, pressure, gust | no | liquid precipitation in the past 6 h in hours with wet bulb <= 32 F and T >= 31 F: >= 0.10 in, >= 0.25 in, >= 0.25 in with gusts >= 35 mph; rule-of-thumb thresholds |
 | **Radiational cooling setup** | derived: cloud cover, wind | no | clear (<= 25 %) or calm (<= 5 mph); both; both and very clear (<= 10 %) and nearly calm (<= 2 mph) |
 | **Cold pool / inversion** | derived: sea-level T, terrain | no | sea-level T minus its mean over land within ~25 km (21 x 21 cells, water excluded): negative = cold pool, positive = inversion / warm slope |
 | **24 h precipitation at T <= 32 F** | derived: 25 hourly precipitation and T | no | liquid that fell in hours with 2 m T <= 32 F: water landing on frozen surfaces (freezing rain's footprint, but also snow); cool precipitation ramp |
 | **Terrain height** | `HGT` (static) | no | the analysis grid's smoothed terrain, in feet |
 
-Current-only variables (no change maps) have 1 / 3 / 6 / 12 / 24-hour buttons greyed out; switching to one from a change map falls back
+Current-only variables (no change maps) have 1 / 3 / 6 / 12 / 24-hour buttons grayed out; switching to one from a change map falls back
 to the current field. Every variable has a short "how to read this" note on the page (from `Variable.note` in `config.py`).
 
 ### Precipitation
