@@ -20,6 +20,7 @@ class Product:
     key: str
     label: str
     long_name: str
+    map_title: str       # the full name printed at the top of every map
     bucket: str          # public NOAA Open Data bucket (anonymous access)
     prefix: str          # e.g. "rtma2p5" -> rtma2p5.YYYYMMDD/rtma2p5.tHHz.2dvaranl_ndfd.grb2*
     lookback_hours: int  # how far back to search for the newest published cycle
@@ -30,12 +31,12 @@ class Product:
 
 PRODUCTS: dict[str, Product] = {
     "rtma": Product(
-        "rtma", "RTMA", "Real-Time Mesoscale Analysis", "noaa-rtma-pds", "rtma2p5", 6,
+        "rtma", "RTMA", "Real-Time Mesoscale Analysis", "NOAA Real-Time Mesoscale Analysis 2.5km (RTMA)", "noaa-rtma-pds", "rtma2p5", 6,
         "NOAA/NCEP 2.5 km hourly surface analysis. Available ~35-45 min after the valid hour.",
         pcp_suffix="pcp.184.grb2", pcp_refresh_hours=3,
     ),
     "urma": Product(
-        "urma", "URMA", "UnRestricted Mesoscale Analysis", "noaa-urma-pds", "urma2p5", 12,
+        "urma", "URMA", "Unrestricted Mesoscale Analysis", "NOAA Unrestricted Mesoscale Analysis 2.5km (URMA)", "noaa-urma-pds", "urma2p5", 12,
         "Same 2.5 km grid as RTMA, but run later with more observations. Lags RTMA by a few hours.",
         pcp_suffix="pcp_01h.wexp.grb2", pcp_refresh_hours=24,
     ),
@@ -89,7 +90,7 @@ G_TEMP, G_24H, G_HAZ, G_PCP, G_WIND, G_PRESS, G_FRONT, G_SKY, G_KIN, G_TERRAIN =
 FROSTBITE_CATEGORIES = ("None", "30 min", "10 min", "5 min")
 BLIZZARD_LABELS = ("0 h", "1 h", "2 h", "3 h", "4 h", "5 h", "6 h")
 FLASH_FREEZE_CATEGORIES = ("None", "Fell below 32 °F", "Flash freeze")
-FREEZING_FOG_CATEGORIES = ("None", "Favourable", "Dense")
+FREEZING_FOG_CATEGORIES = ("None", "Favorable", "Dense")
 WET_SNOW_CATEGORIES = ("< 0.10 in", "≥ 0.10 in", "≥ 0.25 in", "+ gusts")
 RAD_COOL_CATEGORIES = ("None", "Clear or calm", "Clear and calm", "Ideal")
 
@@ -124,7 +125,7 @@ class Variable:
     diverging: bool = False            # a current field that is signed (advection, convergence ...): "+" on the labels
     categories: tuple[str, ...] = ()   # integer-coded classes 0..n-1 (flight category ...): shown as area shares, not min / max
     stat_decimals: int = 1             # digits of the low / mean / high statistics on the page
-    lines: tuple[tuple[float, str], ...] = ()   # (value, colour) reference contours drawn over the current-field map
+    lines: tuple[tuple[float, str], ...] = ()   # (value, color) reference contours drawn over the current-field map
     source: str = "idx"                # "idx": a message of the 2dvaranl file (byte range); "pcp": the hourly precipitation file
     partial_series: bool = False       # use whatever hourly inputs exist: each input's missing hours are skipped on their own, and the
                                        # build records how many hours of ``period_hours`` were really available
@@ -174,7 +175,7 @@ VARIABLES: dict[str, Variable] = {
     "slt": Variable("slt", "Sea-level temp", "2m Temperature Adjusted to Sea Level", "°F", "", "",
                     requires=("temp", "terrain"), derive=sea_level_temperature, changes=False,
                     note="2 m temperature plus 3.6 °F per 1,000 ft of analysis terrain height (a 6.5 K/km standard lapse rate), "
-                         "drawn with the 2 m temperature colours. It takes the elevation out of the temperature map, so air-mass "
+                         "drawn with the 2 m temperature colors. It takes the elevation out of the temperature map, so air-mass "
                          "boundaries, cold pools and valley inversions stand out: a uniform air mass looks flat, a cold pool "
                          "reads colder than the slopes around it. This is also the field the advection and frontogenesis maps use."),
     "rhi": Variable("rhi", "RH w.r.t. ice", "2m Relative Humidity with respect to Ice", "%", "", "",
@@ -215,7 +216,7 @@ VARIABLES: dict[str, Variable] = {
     "wcmin24": Variable("wcmin24", "24 h min wind chill", "24-Hour Minimum Wind Chill", "°F", "", "", requires=("temp", "wind"),
                         derive=min_wind_chill, series=24, group=G_24H, changes=False,
                         note="Lowest hourly NWS wind chill in the last 24 hours (air temperature where wind chill is not "
-                             "defined: above 50 °F or wind of 3 mph or less). Same colour legend as the NWS 24-hour minimum wind "
+                             "defined: above 50 °F or wind of 3 mph or less). Same color legend as the NWS 24-hour minimum wind "
                              "chill map."),
     "gustmax24": Variable("gustmax24", "24 h max gust", "24-Hour Maximum Wind Gust", "mph", "", "", requires=("gust",),
                           derive=series_max, series=24, group=G_24H, changes=False,
@@ -283,11 +284,11 @@ VARIABLES: dict[str, Variable] = {
                          note="Where the 2 m temperature fell from above to at or below 32 °F in the last 3 hours with liquid "
                               "precipitation in that time (F), and where it fell 10 °F or more (FF): wet roads and surfaces "
                               "freezing. " + _IND + _PCP_AVAIL),
-    "frzfog": Variable("frzfog", "Freezing fog / drizzle", "Freezing Fog or Drizzle Favourable", "", "", "",
+    "frzfog": Variable("frzfog", "Freezing fog / drizzle", "Freezing Fog or Drizzle Favorable", "", "", "",
                        requires=("temp", "dewpoint", "vis", "ceiling"), derive=freezing_fog, group=G_HAZ, changes=False,
                        categories=FREEZING_FOG_CATEGORIES, labeler=lambda v: ("", "ZF", "ZF+")[int(round(v))],
                        note="2 m temperature at or below 32 °F, dew point depression of 2 °F or less, and visibility under 3 mi or a "
-                            "ceiling under 1,000 ft (Favourable); visibility under 1/2 mi is flagged Dense. Saturated, sub-freezing "
+                            "ceiling under 1,000 ft (Favorable); visibility under 1/2 mi is flagged Dense. Saturated, sub-freezing "
                             "air with reduced visibility also describes falling snow, so read it next to radar. " + _IND),
     "wetsnow": Variable("wetsnow", "Wet-snow load", "Wet-Snow Load Risk, Past 6 Hours", "", "", "",
                         requires=("pcp1", "temp", "dewpoint", "pressure", "gust"), derive=wet_snow_load, series=6, period_hours=6,
@@ -422,7 +423,7 @@ VARIABLES: dict[str, Variable] = {
                             "analysis nearest the map time, or failing that the latest one up to 3 hours earlier (the label says which). "
                             "Only the newest bulletin is kept online, so the page saves each one when it first sees it and earlier times "
                             "fill in only going forward."),
-    "sfcobj": Variable("sfcobj", "Fronts (objective)", "Objective Frontal Zones over MSLP (experimental)", "mb", "", "",
+    "sfcobj": Variable("sfcobj", "Fronts (objective)", "Experimental Objective Fronts and Pressure Centers over MSLP", "mb", "", "",
                        requires=("mslp", "temp", "dewpoint", "pressure", "u10", "v10", "terrain"),
                        derive=lambda m, *rest: m, group=G_FRONT, changes=False, isobar_step=2.0, label_max_terrain_m=1000.0,
                        labeler=lambda v: "", overlay="objective",
@@ -473,7 +474,7 @@ VARIABLES: dict[str, Variable] = {
                           "temperature advection."),
     "conv": Variable("conv", "Convergence", "10m Wind Convergence", "10⁻⁵ s⁻¹", "", "", requires=("u10", "v10"),
                      needs_geom=True, derive=kin.convergence, group=G_KIN, changes=False, diverging=True,
-                     note="Convergence of the 10 m wind: positive (warm colours) is air piling up, as along coastal fronts, "
+                     note="Convergence of the 10 m wind: positive (warm colors) is air piling up, as along coastal fronts, "
                           "sea-breeze and cold-front boundaries, where lift and bands of precipitation tend to focus; negative is "
                           "divergence. Derivatives of a 2.5 km wind analysis are noisy, so the wind is smoothed over about 8 km "
                           "and the pattern matters more than any single value. Coastlines and lake shores light up because land and water "

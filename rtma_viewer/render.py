@@ -1,7 +1,7 @@
 """Cartopy/matplotlib map panels -> small, palette-quantised PNGs.
 
 Look (after the Penn State e-Wall style): white page with a thin-framed map, a one-line header
-("RTMA: 2m Temperature (°F)" left, "Valid: 17:00z Thu Nov 5 2026" right), a wide segmented colour bar
+(line 1: "NOAA Real-Time Mesoscale Analysis 2.5km (RTMA)" left, "Valid: 17:00z Thu Nov 5 2026" right; line 2: the variable), a wide segmented colour bar
 bottom-left, thick state lines over thin county lines, and bold haloed values at METAR stations.
 """
 from __future__ import annotations
@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime
+from typing import NamedTuple
 from pathlib import Path
 
 import cartopy.crs as ccrs
@@ -42,9 +43,11 @@ PROJ = ccrs.LambertConformal(central_longitude=-70.6, central_latitude=44.2, sta
 BRANDING = ("aaronperry-dev.github.io", " (Aaron Perry)")
 SHOW_STATION_IDS = False         # True adds a small ICAO id under each value
 
-# page layout, inches (12 x 8.76 at 100 dpi = 1200 x 876 px)
+# page layout, inches (12 x 9.04 at 100 dpi = 1200 x 903 px)
 FIG_W = 12.0
-MARGIN, HEADER_H, FOOTER_H = 0.25, 0.52, 0.82
+MARGIN, HEADER_H, FOOTER_H = 0.25, 0.80, 0.82
+HEADER_SIZE = 12.5               # both header lines
+TICK_SIZE = 10.5                 # colour-bar tick labels: one size on every map
 MAP_W = FIG_W - 2 * MARGIN
 MAP_H = MAP_W / 1.55
 FIG_H = HEADER_H + MAP_H + FOOTER_H
@@ -154,7 +157,7 @@ def _bold_regular(fig, x, y, bold, regular, size, right=False):
         fig.text(x - tr.get_window_extent(r).width / wpx, y, bold, ha="right", fontweight="bold", **kw)
 
 
-def render_panel(ctx: MapContext, field: np.ndarray, style: Style, *, texts: tuple[str, str, str, str], signed: bool,
+def render_panel(ctx: MapContext, field: np.ndarray, style: Style, *, texts: "Header", signed: bool,
                  out: Path, dpi: int = 100, colors: int = 256, var: Variable | None = None,
                  skip_labels: np.ndarray | None = None, overlay=None) -> int:
     """``overlay``: optional callable ``overlay(ax, extent)`` that draws extra features (fronts, H / L) above the isobars."""
@@ -226,10 +229,13 @@ def render_panel(ctx: MapContext, field: np.ndarray, style: Style, *, texts: tup
                         annotation_clip=False)
 
     # ------------------------------------------------------------------ header (title left, valid time right)
-    base = 1 - 0.35 / FIG_H
-    left_bold, left_rest, right_bold, right_rest = texts
-    _bold_regular(fig, MARGIN / FIG_W, base, left_bold, left_rest, 12.5)
-    _bold_regular(fig, 1 - MARGIN / FIG_W, base, right_bold, right_rest, 12.5, right=True)
+    # line 1: the analysis (bold) and its valid time; line 2: the variable and anything that qualifies it
+    line1, line2 = 1 - 0.33 / FIG_H, 1 - 0.62 / FIG_H
+    _bold_regular(fig, MARGIN / FIG_W, line1, texts.product, "", HEADER_SIZE)
+    _bold_regular(fig, 1 - MARGIN / FIG_W, line1, "Valid", texts.valid, HEADER_SIZE, right=True)
+    _bold_regular(fig, MARGIN / FIG_W, line2, texts.title, "", HEADER_SIZE)
+    if texts.note:
+        _bold_regular(fig, 1 - MARGIN / FIG_W, line2, "", texts.note, HEADER_SIZE, right=True)
 
     # ------------------------------------------------------------------ colour bar (bottom left) + branding
     bar_h, bar_y = 0.28, FOOTER_H - 0.13 - 0.28
@@ -240,7 +246,7 @@ def render_panel(ctx: MapContext, field: np.ndarray, style: Style, *, texts: tup
         return "0" if abs(v) < 1e-9 else f"{v:g}"
     cb = fig.colorbar(mesh, cax=cax, orientation="horizontal", extend="neither", ticks=style.ticks,
                       format=mticker.FuncFormatter(fmt), spacing="uniform" if style.uniform else "proportional")
-    cb.ax.tick_params(labelsize=style.tick_fontsize, length=3, width=0.8, pad=2, colors="black")
+    cb.ax.tick_params(labelsize=TICK_SIZE, length=3, width=0.8, pad=2, colors="black")
     cb.outline.set_linewidth(0.9)
     cy = (bar_y + bar_h / 2) / FIG_H
     _bold_regular(fig, 1 - MARGIN / FIG_W, cy - 0.006, BRANDING[0], BRANDING[1], 10.5, right=True)
@@ -288,16 +294,24 @@ def _z(t: datetime) -> str:
     return f"{t:%H:%Mz %a %b} {t.day}"
 
 
-def panel_text(product: Product, var: Variable, interval: int, valid: datetime, ref: datetime | None, hours: int | None = None):
-    """(left bold, left regular, right bold, right regular) - e.g. 'RTMA' ': 2m Temperature (°F)' 'Valid' ': 17:00z Thu Nov 5 2026'."""
+class Header(NamedTuple):
+    product: str       # "NOAA Real-Time Mesoscale Analysis 2.5km (RTMA)"
+    valid: str         # ": 17:00z Thu Nov 5 2026"
+    title: str         # "2m Temperature (°F)", with the change interval and unit
+    note: str          # what qualifies the map: "(vs ...)", "(past 24 h)", "(N of M h available)"; may be empty
+
+
+def panel_text(product: Product, var: Variable, interval: int, valid: datetime, ref: datetime | None, hours: int | None = None) -> Header:
     chg = f" {interval}-hr Change" if interval else ""
-    right = f": {_z(valid)} {valid.year}" + (f"  (vs {_z(ref)})" if ref else "")
-    if var.series and var.show_period:                                            # period products: say what window they summarise
-        right += f"  (past {var.series} h)"
+    notes = []
+    if ref:
+        notes.append(f"(vs {_z(ref)})")
+    if var.series and var.show_period and "Hour" not in var.long_name:           # period products: say what window they summarise (unless the title already does)
+        notes.append(f"(past {var.series} h)")
     if hours is not None and var.period_hours and hours < var.period_hours:     # a total built from fewer hours than its name says
-        right += f"  ({hours} of {var.period_hours} h available)"
+        notes.append(f"({hours} of {var.period_hours} h available)")
     unit = f" ({var.unit})" if var.unit else ""
-    return product.label, f": {var.long_name}{chg}{unit}", "Valid", right
+    return Header(product.map_title, f": {_z(valid)} {valid.year}", f"{var.long_name}{chg}{unit}", "  ".join(notes))
 
 
 def style_and_flags(var: Variable, interval: int):

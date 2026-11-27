@@ -165,7 +165,6 @@ class Style:
     ticks: np.ndarray
     signed: bool = False
     uniform: bool = False          # legend with equal-width blocks (uneven levels)
-    tick_fontsize: float = 12.5
     tick_labels: dict | None = None   # {tick value: text} instead of the number (e.g. compass points)
 
     def cmap_norm(self):
@@ -246,7 +245,7 @@ _PRESSURE_KEYS = ("pressure", "mslp")
 
 
 def temperature_style() -> Style:
-    return _custom(_TEMP_LEVELS, _TEMP_COLORS, "both", ticks=np.arange(-40, 101, 10), tick_fontsize=11, uniform=False)
+    return _custom(_TEMP_LEVELS, _TEMP_COLORS, "both", ticks=np.arange(-40, 101, 10), uniform=False)
 
 
 def change_style(var_key: str | None = None) -> Style:
@@ -255,27 +254,26 @@ def change_style(var_key: str | None = None) -> Style:
     else:
         levels, hexes = _PRESSURE_CHANGE_LEVELS if var_key in _PRESSURE_KEYS else _WPC_LEVELS, _WPC_COLORS
     cols = np.array([to_rgb(c) for c in hexes])
-    return Style(levels.copy(), cols, "both", levels.copy(), signed=True, uniform=True, tick_fontsize=10.5)
+    return Style(levels.copy(), cols, "both", levels.copy(), signed=True, uniform=True)
 
 
 def wind_style() -> Style:
     cols = np.array([to_rgb(c) for c in _NWS_WIND_COLORS] + [to_rgb(_NWS_WIND_COLORS[-1])])   # over = top colour
-    return Style(_NWS_WIND_LEVELS.copy(), cols, "max", _NWS_WIND_LEVELS.copy(), uniform=True, tick_fontsize=10.5)
+    return Style(_NWS_WIND_LEVELS.copy(), cols, "max", _NWS_WIND_LEVELS.copy(), uniform=True)
 
 
 def apparent_style() -> Style:
     levels, cols = _apparent_colors()
-    return Style(levels, np.array([to_rgb(c) for c in cols]), "both", np.arange(-60, 121, 10, dtype=float),
-                 tick_fontsize=11)
+    return Style(levels, np.array([to_rgb(c) for c in cols]), "both", np.arange(-60, 121, 10, dtype=float))
 
 
-def _custom(levels, hex_colors, extend, ticks=None, tick_fontsize=10.5, uniform=True, tick_labels=None) -> Style:
+def _custom(levels, hex_colors, extend, ticks=None, uniform=True, tick_labels=None) -> Style:
     levels = np.asarray(levels, float)
     n = len(levels) - 1 + (1 if extend in ("min", "max") else 2 if extend == "both" else 0)
     assert len(hex_colors) == n, (len(hex_colors), n)
     return Style(levels, np.array([to_rgb(c) for c in hex_colors]), extend,
                  levels if ticks is None else np.asarray(ticks, float), uniform=uniform,
-                 tick_fontsize=tick_fontsize, tick_labels=tick_labels)
+                 tick_labels=tick_labels)
 
 
 def visibility_style() -> Style:
@@ -294,7 +292,7 @@ def terrain_style() -> Style:
     levels = [0, 20] + list(range(250, 6001, 250))                       # first bin is sea level
     centers = (np.array(levels[1:-1]) + np.array(levels[2:])) / 2
     cols = [_SEA] + [to_hex(c) for c in TERRAIN_FT(centers)] + [to_hex(TERRAIN_FT(6000.0)[0])]
-    return _custom(levels, cols, "max", ticks=np.arange(0, 6001, 1000), tick_fontsize=11, uniform=False)
+    return _custom(levels, cols, "max", ticks=np.arange(0, 6001, 1000), uniform=False)
 
 
 _COMPASS = {0: "N", 45: "NE", 90: "E", 135: "SE", 180: "S", 225: "SW", 270: "W", 315: "NW", 360: "N"}
@@ -306,7 +304,7 @@ def direction_style() -> Style:
     """Wind direction in 16 compass sectors (N is split across 0/360 so every bin is a true sector), cyclic colours."""
     levels = [0.0] + [11.25 + 22.5 * i for i in range(16)] + [360.0]              # 0, 11.25, 33.75 ... 348.75, 360
     centers = np.array([0.0] + [22.5 * i for i in range(1, 16)] + [360.0])        # N | NNE ... NNW | N
-    return _custom(levels, [to_hex(c) for c in _DIR_RAMP(centers)], "neither", ticks=sorted(_COMPASS), tick_fontsize=11,
+    return _custom(levels, [to_hex(c) for c in _DIR_RAMP(centers)], "neither", ticks=sorted(_COMPASS),
                    uniform=False, tick_labels=_COMPASS)
 
 
@@ -316,13 +314,13 @@ def diverging_style(levels) -> Style:
     levels = np.asarray(levels, float)
     assert len(levels) % 2 == 0 and np.allclose(levels, -levels[::-1]), "need symmetric levels with an even count"
     cols = _DIV_RAMP(np.linspace(-1, 1, len(levels) + 1))
-    return Style(levels.copy(), cols, "both", levels.copy(), signed=True, uniform=True, tick_fontsize=10.5)
+    return Style(levels.copy(), cols, "both", levels.copy(), signed=True, uniform=True)
 
 
 def categorical_style(hex_colors, labels) -> Style:
     """Integer-coded classes 0..n-1: one block per class, labelled in the legend."""
     n = len(hex_colors)
-    return _custom(np.arange(n + 1) - 0.5, hex_colors, "neither", ticks=np.arange(n), tick_fontsize=11,
+    return _custom(np.arange(n + 1) - 0.5, hex_colors, "neither", ticks=np.arange(n),
                    tick_labels={i: t for i, t in enumerate(labels)})
 
 
@@ -351,7 +349,7 @@ _PCP_COLORS = ["#ffffff", "#c7e9c0", "#a1d99b", "#74c476", "#31a353", "#006d2c",
 
 
 def precip_style() -> Style:
-    return _custom(_PCP_LEVELS, _PCP_COLORS, "max", ticks=_PCP_LEVELS[1:], tick_fontsize=10)
+    return _custom(_PCP_LEVELS, _PCP_COLORS, "max", ticks=_PCP_LEVELS[1:])
 
 
 # Frozen precipitation (liquid equivalent): the same bins as the precipitation legend in a cool ColorBrewer BuPu (light blue -> blue-purple ->
@@ -360,15 +358,15 @@ _FROZEN_COLORS = ["#ffffff"] + ['#bacfe4', '#acc6df', '#9fbcda', '#96acd2', '#8f
 
 
 def frozen_style() -> Style:
-    return _custom(_PCP_LEVELS, _FROZEN_COLORS, "max", ticks=_PCP_LEVELS[1:], tick_fontsize=10)
+    return _custom(_PCP_LEVELS, _FROZEN_COLORS, "max", ticks=_PCP_LEVELS[1:])
 
 
-def stepped_style(ramp: Ramp, levels, tick_fontsize: float = 10) -> Style:
+def stepped_style(ramp: Ramp, levels) -> Style:
     """Uneven levels with one equal colour block per bin along a ramp defined on 0..1, plus the top colour for values above the
     last level."""
     levels = list(levels)
     cols = ramp(np.linspace(0, 1, len(levels)))
-    return _custom(levels, [to_hex(c) for c in cols], "max", ticks=levels[1:], tick_fontsize=tick_fontsize)
+    return _custom(levels, [to_hex(c) for c in cols], "max", ticks=levels[1:])
 
 
 _NONE = "#eef2f5"
@@ -399,7 +397,7 @@ def mixing_ratio_style() -> Style:
     levels = [0, 0.25, 0.5, 0.75, 1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10, 12, 16]
     centers = np.array(levels[:-1]) + np.diff(levels) / 2
     cols = [to_hex(c) for c in MIXING_G_KG(centers)] + [to_hex(MIXING_G_KG(16.0)[0])]
-    return _custom(levels, cols, "max", ticks=[0, 0.5, 1, 2, 3, 4, 6, 8, 12, 16], tick_fontsize=10.5)
+    return _custom(levels, cols, "max", ticks=[0, 0.5, 1, 2, 3, 4, 6, 8, 12, 16])
 
 
 _ABS = {
