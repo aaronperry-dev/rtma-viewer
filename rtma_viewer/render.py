@@ -48,6 +48,7 @@ FIG_W = 12.0
 MARGIN, HEADER_H, FOOTER_H = 0.25, 0.80, 0.82
 HEADER_SIZE = 12.5               # both header lines
 TICK_SIZE = 10.5                 # colour-bar tick labels: one size on every map
+HALO_VALUE, HALO_ISOBAR, HALO_ID = 1.5, 1.4, 1.2    # white outline widths (points) around station values / isobar labels / station ids
 MAP_W = FIG_W - 2 * MARGIN
 MAP_H = MAP_W / 1.55
 FIG_H = HEADER_H + MAP_H + FOOTER_H
@@ -205,7 +206,7 @@ def render_panel(ctx: MapContext, field: np.ndarray, style: Style, *, texts: "He
             try:
                 texts_ = ax.clabel(cs, labelled, fmt="%d", fontsize=8, inline=True, inline_spacing=6)
                 for t in texts_:
-                    t.set_path_effects(halo(2.0))
+                    t.set_path_effects(halo(HALO_ISOBAR))
             except Exception as exc:                 # no label fits / no contour at those levels: lines alone are fine
                 log.debug("isobar labels skipped: %s", exc)
 
@@ -222,10 +223,10 @@ def render_panel(ctx: MapContext, field: np.ndarray, style: Style, *, texts: "He
             continue
         ax.annotate(txt, (px, py), xytext=(0, 1.5 if SHOW_STATION_IDS else 0), textcoords="offset points",
                     fontsize=7.4, fontweight="bold", color="black", ha="center", va="center", zorder=8,
-                    path_effects=halo(2.4), annotation_clip=False)
+                    path_effects=halo(HALO_VALUE), annotation_clip=False)
         if SHOW_STATION_IDS:
             ax.annotate(st.icao, (px, py), xytext=(0, -6.6), textcoords="offset points", fontsize=5.8,
-                        color="#222222", ha="center", va="center", zorder=8, path_effects=halo(1.8),
+                        color="#222222", ha="center", va="center", zorder=8, path_effects=halo(HALO_ID),
                         annotation_clip=False)
 
     # ------------------------------------------------------------------ header (title left, valid time right)

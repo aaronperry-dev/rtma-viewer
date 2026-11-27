@@ -158,7 +158,7 @@ def _near(xy: np.ndarray, extent, pad: float) -> bool:
 
 def draw_analysis(ax, analysis: Analysis, to_xy, extent, warmer: Callable | None = None, label: str = "", zorder: float = 6.0):
     """Draw fronts, troughs and pressure centres of ``analysis`` that fall in ``extent`` = (x0, x1, y0, y1) map metres."""
-    halo = [pe.withStroke(linewidth=LINE_W + 2.2, foreground="white")]
+    halo = [pe.withStroke(linewidth=LINE_W + 1.3, foreground="white")]
     for front in analysis.fronts:
         ll = np.array(front.points)
         xy = np.asarray(to_xy(ll[:, 1], ll[:, 0]), float)[:, :2]
@@ -166,7 +166,7 @@ def draw_analysis(ax, analysis: Analysis, to_xy, extent, warmer: Callable | None
             continue
         dense, polys = front_symbols(front, to_xy, warmer)
         if front.kind == "trough":
-            ax.plot(dense[:, 0], dense[:, 1], color="white", lw=4.2, zorder=zorder, alpha=0.9, solid_capstyle="butt")
+            ax.plot(dense[:, 0], dense[:, 1], color="white", lw=3.4, zorder=zorder, alpha=0.9, solid_capstyle="butt")
             ax.plot(dense[:, 0], dense[:, 1], color=COLORS["trough"], lw=2.0, ls=(0, (5, 3)), zorder=zorder + 0.05,
                     dash_capstyle="butt")
             continue
@@ -183,10 +183,10 @@ def draw_analysis(ax, analysis: Analysis, to_xy, extent, warmer: Callable | None
             continue
         colour = H_COLOR if c.kind == "H" else L_COLOR
         ax.annotate(c.kind, (px, py), ha="center", va="center", fontsize=26, fontweight="bold", color=colour, zorder=zorder + 0.3,
-                    path_effects=[pe.withStroke(linewidth=3.2, foreground="white")], annotation_clip=False)
+                    path_effects=[pe.withStroke(linewidth=2.0, foreground="white")], annotation_clip=False)
         ax.annotate(f"{c.pressure:.0f}", (px, py), xytext=(0, -19), textcoords="offset points", ha="center", va="center", fontsize=10,
                     fontweight="bold", color=colour, zorder=zorder + 0.3,
-                    path_effects=[pe.withStroke(linewidth=2.6, foreground="white")], annotation_clip=False)
+                    path_effects=[pe.withStroke(linewidth=1.7, foreground="white")], annotation_clip=False)
     if label:
         ax.text(0.008, 0.012, label, transform=ax.transAxes, fontsize=9, fontweight="bold", ha="left", va="bottom",
-                zorder=zorder + 0.5, path_effects=[pe.withStroke(linewidth=3.0, foreground="white")])
+                zorder=zorder + 0.5, path_effects=[pe.withStroke(linewidth=1.9, foreground="white")])
